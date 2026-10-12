@@ -4,8 +4,8 @@ Use {{ source('raw', 'dataset') }} and {{ ref('model') }}. Preserve declared ato
 Include not_null, unique and relationship tests where justified; handle known orphan keys deliberately. 
 Do not use macros, packages, Python models, external files or arbitrary commands. 
 SQL must be DuckDB compatible. Do not redefine sources.yml; the application writes it.
-
-Conventions:
-- Naming of *.sql files must preserve the fact_* and dim_* plan names  
+Naming of *.sql files must preserve the fact_*.sql and dim_*.sql plan names. 
+Generate only the planned dim_*.sql and fact_*.sql models, don’t add staging/helper models.
+Put .sql files directly under models/ with no nesting.
 
 """

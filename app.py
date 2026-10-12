@@ -6,6 +6,7 @@ import streamlit as st
 from src.agents import configured_model_id
 from src.data import preview
 from src.demo import REQUEST, write_demo
+from src.storage import DUCKDB_FILENAME
 from src.workflow import run
 
 st.set_page_config(page_title="ModelLM", layout="wide")
@@ -61,7 +62,7 @@ with request_tab:
 
 if state:
     run_dir = Path(state["run_dir"])
-    database = run_dir / "analytics.duckdb"
+    database = run_dir / DUCKDB_FILENAME
     with data_tab:
         raw, transformed, model = st.tabs(["Raw Data", "Transformed Data", "Inferred Data Model"])
         with raw:
@@ -127,10 +128,11 @@ if state:
                 cols = st.columns(len(metrics))
                 for col, (label, value) in zip(cols, metrics.items()):
                     col.metric(label, f"{value:,.2f}" if isinstance(value, float) else f"{value:,}")
-            views = state["analysis"]["views"]
-            for index, view in enumerate(views):
+            analyses = state["analysis"]["analyses"]
+            for index, analysis in enumerate(analyses):
+                st.subheader(analysis["title"])
                 st.plotly_chart(pio.read_json(run_dir / f"chart_{index}.json"), use_container_width=True)
-                st.caption(view["finding"])
+                st.write(analysis["finding"])
             st.subheader("Validated data preview")
             names = state.get("model_names", [])
             if names and database.exists():

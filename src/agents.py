@@ -3,13 +3,16 @@ import json
 import os
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TypeVar
 
+import pandas as pd
 from pydantic import BaseModel
 
-from src.core.prompt import ANALYSIS, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL
+from src.core.prompt import ANALYSIS, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
+from src.tools.duckdb_tools import DuckDBAnalysisTools, normalized_sql
 
-from .core.contracts import AnalysisPlan, AnalyticalPlan, DbtImplementation
+from .core.contracts import AnalysisPlan, AnalysisSpec, AnalyticalPlan, DbtImplementation, PlotSpec
 
 T = TypeVar("T", bound=BaseModel)
 DEFAULT_BEDROCK_MODEL_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -20,14 +23,19 @@ def configured_model_id() -> str:
 
 
 async def _invoke(
-    prompt: str, schema: type[T], stage: str, emit: Callable, system_prompt: str
+    prompt: str,
+    schema: type[T],
+    stage: str,
+    emit: Callable,
+    system_prompt: str,
+    tools: list | None = None,
 ) -> T:
     from strands import Agent
     from strands.models import BedrockModel
 
     model_id = configured_model_id()
     model = BedrockModel(model_id=model_id, temperature=0.1)
-    agent = Agent(model=model, system_prompt=system_prompt)
+    agent = Agent(model=model, system_prompt=system_prompt, tools=tools or [])
     started = time.monotonic()
     emit(stage, "model_call", f"Calling {model_id}")
     final = None
@@ -62,9 +70,14 @@ async def _invoke(
 
 
 def invoke(
-    prompt: str, schema: type[T], stage: str, emit: Callable, system_prompt: str
+    prompt: str,
+    schema: type[T],
+    stage: str,
+    emit: Callable,
+    system_prompt: str,
+    tools: list | None = None,
 ) -> T:
-    return asyncio.run(_invoke(prompt, schema, stage, emit, system_prompt))
+    return asyncio.run(_invoke(prompt, schema, stage, emit, system_prompt, tools))
 
 
 def conceptual(
@@ -115,7 +128,10 @@ def analyse(
     model_schemas: dict,
     summaries: dict,
     emit: Callable,
+    database: Path,
 ) -> AnalysisPlan:
+    db = DuckDBAnalysisTools(database, list(model_schemas))
+
     prompt = json.dumps(
         {
             "request": request,
@@ -125,4 +141,40 @@ def analyse(
         },
         default=str,
     )
-    return invoke(prompt, AnalysisPlan, "analytical interpretation", emit, ANALYSIS)
+    result = invoke(
+        prompt,
+        AnalysisPlan,
+        "analytical interpretation",
+        emit,
+        ANALYSIS,
+        tools=[
+            db.list_models,
+            db.describe_model,
+            db.query_data,
+        ],
+    )
+    uninspected = [
+        spec.title for spec in result.analyses
+        if not db.inspected_queries.get(normalized_sql(spec.sql), False)
+    ]
+    if uninspected:
+        raise ValueError(f"Analysis SQL was not fully inspected with query_data: {uninspected}")
+    return result
+
+
+def plot(spec: AnalysisSpec, frame: pd.DataFrame, emit: Callable) -> PlotSpec:
+    prompt = json.dumps(
+        {
+            "title": spec.title,
+            "question": spec.question,
+            "visualisation_intent": spec.visualisation_intent,
+            "finding": spec.finding,
+            "dataframe": {
+                "row_count": len(frame),
+                "columns": {name: str(dtype) for name, dtype in frame.dtypes.items()},
+                "sample_rows": frame.head(12).to_dict(orient="records"),
+            },
+        },
+        default=str,
+    )
+    return invoke(prompt, PlotSpec, "visualisation generation", emit, PLOTTING)

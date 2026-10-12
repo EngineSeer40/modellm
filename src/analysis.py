@@ -1,147 +1,118 @@
+"""Materialise analytical results, then render from their pandas DataFrames."""
+
+import inspect
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 import plotly.express as px
 
-from .core.contracts import AnalysisPlan, ViewSpec
+from .core.contracts import AnalysisPlan, AnalysisSpec, PlotSpec
 from .data import identifier
+from .tools.duckdb_tools import execute_analysis_sql
 
 
 def demo_analysis() -> AnalysisPlan:
-    return AnalysisPlan(
-        views=[
-            ViewSpec(
-                title="Monthly revenue",
-                table="sales",
-                x="order_month",
-                y="revenue",
-                aggregate="sum",
-                chart="line",
-                finding="The monthly trend shows how recorded completed sales change across the available months.",
-            ),
-            ViewSpec(
-                title="Revenue by customer",
-                table="sales",
-                x="customer_name",
-                y="revenue",
-                aggregate="sum",
-                chart="bar",
-                finding="Customer revenue highlights concentration, including sales assigned to an unknown customer.",
-            ),
-            ViewSpec(
-                title="Revenue by product",
-                table="sales",
-                x="product_name",
-                y="revenue",
-                aggregate="sum",
-                chart="bar",
-                finding="Product revenue shows which recorded items contribute most.",
-            ),
-            ViewSpec(
-                title="Units by category",
-                table="sales",
-                x="category",
-                y="quantity",
-                aggregate="sum",
-                chart="bar",
-                finding="Category units offer a volume comparison alongside revenue.",
-            ),
-        ]
-    )
+    """Fixed analytical questions for the bundled sales acceptance case."""
+    return AnalysisPlan(analyses=[
+        AnalysisSpec(
+            title="Monthly revenue",
+            question="How are completed sales changing over time?",
+            sql="SELECT date_trunc('month', order_date) AS order_month, sum(revenue) AS revenue FROM main.fact_order_items GROUP BY 1 ORDER BY 1",
+            finding="Completed sales total $160 in January, $290 in February, and $65 in March.",
+            visualisation_intent="Show the monthly revenue trend",
+        ),
+        AnalysisSpec(
+            title="Revenue by customer",
+            question="Which customers contribute most to revenue?",
+            sql="SELECT c.customer_name, sum(f.revenue) AS revenue FROM main.fact_order_items f JOIN main.dim_customer c ON f.customer_key = c.customer_key GROUP BY 1 ORDER BY revenue DESC",
+            finding="Beta contributes $290, Acme $220, and the unknown customer $5.",
+            visualisation_intent="Compare customer revenue",
+        ),
+        AnalysisSpec(
+            title="Revenue by product",
+            question="Which products drive revenue?",
+            sql="SELECT p.product_name, sum(f.revenue) AS revenue FROM main.fact_order_items f JOIN main.dim_product p ON f.product_key = p.product_key GROUP BY 1 ORDER BY revenue DESC",
+            finding="Monitor contributes $440 of the $515 completed sales revenue.",
+            visualisation_intent="Rank products by revenue",
+        ),
+        AnalysisSpec(
+            title="Units by category",
+            question="How does unit volume vary by product category?",
+            sql="SELECT p.category, sum(f.quantity) AS units FROM main.fact_order_items f JOIN main.dim_product p ON f.product_key = p.product_key GROUP BY 1 ORDER BY units DESC",
+            finding="Each recorded product category contributes three units to completed sales.",
+            visualisation_intent="Compare unit volume by category",
+        ),
+    ])
 
 
-def available_views(model_names: list[str]) -> dict[str, str]:
-    views = {name: f'SELECT * FROM main."{identifier(name)}"' for name in model_names}
-    if {"fact_order_items", "dim_customer", "dim_product"}.issubset(model_names):
-        views["sales"] = """SELECT f.*, c.customer_name, c.segment, c.region,
-            p.product_name, p.category, date_trunc('month', f.order_date) AS order_month
-            FROM main.fact_order_items f
-            JOIN main.dim_customer c ON f.customer_key = c.customer_key
-            JOIN main.dim_product p ON f.product_key = p.product_key"""
-    return views
+def materialize_analyses(
+    database: Path, model_names: list[str], analysis: AnalysisPlan
+) -> list[tuple[AnalysisSpec, pd.DataFrame]]:
+    results = []
+    for spec in analysis.analyses:
+        frame, _ = execute_analysis_sql(database, spec.sql, model_names)
+        if frame.empty or len(frame.columns) == 0 or frame.isna().all().all():
+            raise ValueError(f"Analysis result is empty or unusable: {spec.title}")
+        if not frame.columns.is_unique:
+            raise ValueError(f"Analysis result has duplicate column names: {spec.title}")
+        results.append((spec, frame))
+    return results
 
 
-def describe_views(database: Path, views: dict[str, str]) -> tuple[dict, dict]:
-    schemas, summaries = {}, {}
+def summarize_models(database: Path, model_names: list[str]) -> dict:
+    summaries = {}
     with duckdb.connect(str(database), read_only=True) as con:
-        for name, sql in views.items():
-            schemas[name] = {
-                row[0]: row[1] for row in con.execute(f"DESCRIBE {sql}").fetchall()
-            }
+        for name in model_names:
+            table = f'main."{identifier(name)}"'
             summaries[name] = {
-                "rows": con.execute(f"SELECT count(*) FROM ({sql})").fetchone()[0],
-                "preview": con.execute(f"SELECT * FROM ({sql}) LIMIT 3")
-                .df()
-                .astype(str)
-                .to_dict("records"),
+                "rows": con.execute(f"SELECT count(*) FROM {table}").fetchone()[0],
+                "preview": con.execute(f"SELECT * FROM {table} LIMIT 3")
+                .df().astype(str).to_dict("records"),
             }
-    return schemas, summaries
+    return summaries
 
 
-def make_charts(
-    database: Path, views: dict[str, str], schemas: dict, analysis: AnalysisPlan
-) -> list[tuple[ViewSpec, object, object]]:
-    charts = []
-    with duckdb.connect(str(database), read_only=True) as con:
-        for spec in analysis.views[:4]:
-            if (
-                spec.table not in views
-                or spec.x not in schemas[spec.table]
-                or spec.y not in schemas[spec.table]
-            ):
-                raise ValueError(f"Invalid view fields: {spec.table}.{spec.x}/{spec.y}")
-            x, y = identifier(spec.x), identifier(spec.y)
-            aggregate = {
-                "sum": f"sum({y})",
-                "avg": f"avg({y})",
-                "count": f"count({y})",
-                "count_distinct": f"count(distinct {y})",
-            }[spec.aggregate]
-            frame = con.execute(
-                f"SELECT {x} AS x, {aggregate} AS y FROM ({views[spec.table]}) GROUP BY 1 ORDER BY 1 LIMIT 500"
-            ).df()
-            chart_fn = {
-                "line": px.line,
-                "bar": px.bar,
-                "scatter": px.scatter,
-                "pie": px.pie,
-            }[spec.chart]
-            fig = (
-                chart_fn(frame, names="x", values="y", title=spec.title)
-                if spec.chart == "pie"
-                else chart_fn(frame, x="x", y="y", title=spec.title)
-            )
-            fig.update_layout(
-                xaxis_title=spec.x.replace("_", " ").title(),
-                yaxis_title=f"{spec.aggregate} {spec.y}".replace("_", " ").title(),
-            )
-            charts.append((spec, fig, frame))
-    return charts
+def demo_plot(spec: AnalysisSpec) -> PlotSpec:
+    if spec.title == "Monthly revenue":
+        return PlotSpec(function="line", columns={"x": "order_month", "y": "revenue"})
+    if spec.title == "Units by category":
+        return PlotSpec(function="bar", columns={"x": "category", "y": "units"})
+    column = "customer_name" if spec.title == "Revenue by customer" else "product_name"
+    return PlotSpec(function="bar", columns={"x": column, "y": "revenue"})
 
 
-def metrics(database: Path, model_names: list[str], plan=None) -> dict:
-    if "fact_order_items" not in model_names:
-        result = {}
-        if plan is None:
-            return result
-        with duckdb.connect(str(database), read_only=True) as con:
-            for fact in plan.target_model.facts:
-                if fact.name not in model_names:
-                    continue
-                available = {
-                    row[0]
-                    for row in con.execute(
-                        f'DESCRIBE SELECT * FROM main."{identifier(fact.name)}"'
-                    ).fetchall()
-                }
-                for measure in fact.measures:
-                    if measure.name in available and measure.additivity == "additive":
-                        label = f"{fact.name}.{measure.name}"
-                        value = con.execute(
-                            f'SELECT sum("{identifier(measure.name)}") FROM main."{identifier(fact.name)}"'
-                        ).fetchone()[0]
-                        result[label] = float(value or 0)
-        return result
+PLOTLY_COLUMN_ARGUMENTS = {
+    "x", "y", "z", "color", "size", "symbol", "text", "facet_row", "facet_col",
+    "hover_name", "hover_data", "names", "values", "path", "ids", "parents",
+    "lat", "lon", "locations", "animation_frame", "animation_group",
+    "dimensions", "custom_data", "line_group", "line_dash", "pattern_shape",
+}
+
+
+def render_plot(frame: pd.DataFrame, plot: PlotSpec, title: str):
+    """Use only the executed DataFrame as Plotly's data source."""
+    if plot.function == "imshow":
+        if plot.columns:
+            raise ValueError("imshow uses the full DataFrame without column arguments")
+        return px.imshow(frame, title=title)
+    function = getattr(px, plot.function, None)
+    if not callable(function):
+        raise ValueError(f"Unknown Plotly Express function: {plot.function}")
+    parameters = inspect.signature(function).parameters
+    if "data_frame" not in parameters or "title" not in parameters:
+        raise ValueError(f"Unsupported Plotly Express function: {plot.function}")
+    for argument, value in plot.columns.items():
+        if argument not in PLOTLY_COLUMN_ARGUMENTS or argument not in parameters:
+            raise ValueError(f"Unsupported plot column argument: {argument}")
+        names = value if isinstance(value, list) else [value]
+        if not names or any(name not in frame.columns for name in names):
+            raise ValueError(f"Plot references a missing result column: {argument}={value}")
+    return function(frame, title=title, **plot.columns)
+
+
+def demo_metrics(database: Path) -> dict:
+    """Existing dashboard cards for the bundled deterministic fixture only."""
     with duckdb.connect(str(database), read_only=True) as con:
         revenue, orders, customers, units = con.execute(
             "SELECT coalesce(sum(revenue),0), count(DISTINCT order_id), count(DISTINCT customer_key), coalesce(sum(quantity),0) FROM main.fact_order_items"
@@ -152,3 +123,13 @@ def metrics(database: Path, model_names: list[str], plan=None) -> dict:
         "Customers": customers,
         "Units": float(units),
     }
+
+
+def result_metrics(results: list[tuple[AnalysisSpec, pd.DataFrame]]) -> dict:
+    """Use scalar query results as cards, without assuming any business measure."""
+    cards = {}
+    for spec, frame in results:
+        if len(frame) == 1:
+            for column in frame.select_dtypes(include="number").columns:
+                cards[f"{spec.title}: {column}"] = float(frame.iloc[0][column])
+    return cards

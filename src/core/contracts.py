@@ -92,7 +92,10 @@ def plan_issues(plan: AnalyticalPlan, source_names: list[str]) -> list[str]:
 
 
 class DbtFile(BaseModel):
-    path: str = Field(description="Relative path under models/; .sql or .yml only")
+    path: str = Field(
+        description="Flat filename under models/: a planned dim_*.sql or fact_*.sql model, or schema.yml.",
+        pattern=r"^(?:dim_[a-z][a-z0-9_]*\.sql|fact_[a-z][a-z0-9_]*\.sql|schema\.yml)$",
+    )
     content: str
 
 
@@ -101,16 +104,22 @@ class DbtImplementation(BaseModel):
     explanation: str
 
 
-class ViewSpec(BaseModel):
+class AnalysisSpec(BaseModel):
     title: str
-    table: str
-    x: str
-    y: str
-    aggregate: Literal["sum", "avg", "count", "count_distinct"]
-    chart: Literal["line", "bar", "scatter", "pie"]
+    question: str
+    sql: str
     finding: str
+    visualisation_intent: str
 
 
 class AnalysisPlan(BaseModel):
-    views: list[ViewSpec] = Field(max_length=4)
+    analyses: list[AnalysisSpec] = Field(min_length=1, max_length=4)
     warnings: list[str] = Field(default_factory=list)
+
+
+class PlotSpec(BaseModel):
+    function: str = Field(description="Plotly Express chart function, such as line, histogram, box, or treemap")
+    columns: dict[str, str | list[str]] = Field(
+        default_factory=dict,
+        description="Plotly Express column arguments, using only DataFrame column names",
+    )

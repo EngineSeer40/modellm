@@ -7,17 +7,19 @@ from typing import Callable
 
 from . import agents
 from .analysis import (
-    available_views,
     demo_analysis,
-    describe_views,
-    make_charts,
-    metrics,
+    demo_metrics,
+    demo_plot,
+    materialize_analyses,
+    render_plot,
+    result_metrics,
+    summarize_models,
 )
 from .core.contracts import AnalysisPlan, AnalyticalPlan, DbtImplementation, plan_issues
 from .data import load_raw, profile, relationships, schemas
 from .dbt import dbt_results, demo_implementation, run_dbt, write_project
 from .demo import REQUEST, demo_plan, write_demo
-from .storage import cleanup_run_databases
+from .storage import DUCKDB_FILENAME, cleanup_run_databases
 
 STAGES = ("conceptual", "dbt", "analysis")
 
@@ -48,11 +50,13 @@ def run(
     modes = resolve_stage_modes(demo, stage_modes)
     root = root.resolve()
     cleanup = cleanup_run_databases(root)
-    run_dir = root / uuid.uuid4().hex[:12]
+    run_id = f"{datetime.now(timezone.utc):%y%m%d_%H%M}_{uuid.uuid4().hex[:12]}"
+    run_dir = root / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     events = []
     state = {
         "status": "running",
+        "run_id": run_id,
         "request": request,
         "run_dir": str(run_dir),
         "stage_modes": modes,
@@ -77,7 +81,7 @@ def run(
         if on_event:
             on_event(event)
 
-    database = run_dir / "analytics.duckdb"
+    database = run_dir / DUCKDB_FILENAME
     project = run_dir / "dbt"
     try:
         emit(
@@ -235,31 +239,38 @@ def run(
             "Validated dbt tables are available in DuckDB",
         )
 
-        views = available_views(model_names)
-        view_schemas, summaries = describe_views(database, views)
+        summaries = summarize_models(database, model_names)
         emit(
             "analytical interpretation",
             "start",
             f"Selecting metrics and visuals from validated tables ({modes['analysis']})",
         )
-        if modes["analysis"] == "deterministic" and "sales" not in view_schemas:
+        if modes["analysis"] == "deterministic" and "fact_order_items" not in model_names:
             raise ValueError(
-                "Deterministic analysis fixture needs the bundled sales model; select the analysis agent for these dbt models."
+                "Deterministic analysis fixture needs fact_order_items; select the analysis agent for these dbt models."
             )
         analysis = (
             demo_analysis()
             if modes["analysis"] == "deterministic"
-            else agents.analyse(request, plan, view_schemas, summaries, emit)
+            else agents.analyse(request, plan, state["model_schemas"], summaries, emit, database)
         )
         state["analysis"] = analysis.model_dump()
         emit(
             "analytical interpretation",
             "done",
-            f"Selected {len(analysis.views)} analytical views",
+            f"Selected {len(analysis.analyses)} analytical queries",
         )
 
-        emit("metric generation", "start", "Calculating metrics from validated facts")
-        state["metrics"] = metrics(database, model_names, plan)
+        emit("metric generation", "start", "Executing analytical SQL into pandas DataFrames")
+        results = materialize_analyses(database, model_names, analysis)
+        state["analysis_results"] = []
+        for spec, frame in results:
+            state["analysis_results"].append({
+                "title": spec.title,
+                "rows": len(frame),
+                "columns": list(frame.columns),
+            })
+        state["metrics"] = demo_metrics(database) if modes["analysis"] == "deterministic" else result_metrics(results)
         emit("metric generation", "done", f"Calculated {len(state['metrics'])} metrics")
 
         emit(
@@ -267,10 +278,13 @@ def run(
             "start",
             "Rendering Plotly figures from validated tables",
         )
-        charts = make_charts(database, views, view_schemas, analysis)
-        for index, (_, fig, _) in enumerate(charts):
+        state["plot_specs"] = []
+        for index, (spec, frame) in enumerate(results):
+            plot = demo_plot(spec) if modes["analysis"] == "deterministic" else agents.plot(spec, frame, emit)
+            fig = render_plot(frame, plot, spec.title)
+            state["plot_specs"].append(plot.model_dump())
             fig.write_json(run_dir / f"chart_{index}.json")
-        emit("visualisation generation", "done", f"Rendered {len(charts)} figures")
+        emit("visualisation generation", "done", f"Rendered {len(results)} figures")
         state["quality_warnings"] = (
             [
                 f"{r['orphan_rows']} orphan rows: {r['from']} → {r['to']}"

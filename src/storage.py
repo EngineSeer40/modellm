@@ -7,6 +7,7 @@ from pathlib import Path
 DEFAULT_DUCKDB_RETENTION_DAYS = 14
 DEFAULT_DUCKDB_BUDGET_BYTES = 2 * 1024**3
 STALE_RUNNING_AFTER_SECONDS = 24 * 60 * 60
+DUCKDB_FILENAME = "modellm.duckdb"
 
 
 def cleanup_run_databases(root: Path, *, now: float | None = None) -> dict:
@@ -37,14 +38,14 @@ def cleanup_run_databases(root: Path, *, now: float | None = None) -> dict:
     for run_dir in root.iterdir():
         if not run_dir.is_dir():
             continue
-        database = run_dir / "analytics.duckdb"
-        wal = run_dir / "analytics.duckdb.wal"
+        database = run_dir / DUCKDB_FILENAME
+        wal = run_dir / f"{DUCKDB_FILENAME}.wal"
+        result = run_dir / "result.json"
         existing = [path for path in (database, wal) if path.is_file()]
         if not existing:
             continue
         size = sum(path.stat().st_size for path in existing)
         db_time = max(path.stat().st_mtime for path in existing)
-        result = run_dir / "result.json"
         result_time = result.stat().st_mtime if result.exists() else db_time
         try:
             status = json.loads(result.read_text()).get("status") if result.exists() else None
