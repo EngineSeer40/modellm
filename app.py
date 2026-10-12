@@ -3,6 +3,7 @@ from pathlib import Path
 import plotly.io as pio
 import streamlit as st
 
+from src.agents import configured_model_id
 from src.data import preview
 from src.demo import REQUEST, write_demo
 from src.workflow import run
@@ -17,14 +18,18 @@ state = st.session_state.get("result")
 with request_tab:
     request = st.text_area("Business request", value=REQUEST, height=100)
     files = st.file_uploader("Upload 2–5 related CSV or Parquet datasets", type=["csv", "parquet"], accept_multiple_files=True)
-    mode = st.radio("Run mode", ["Bundled deterministic demo", "Strands + Bedrock agents"], horizontal=True)
-    st.caption("The bundled demo runs without AWS. Agent mode requires Bedrock credentials and model access.")
+    st.subheader("Agent calls")
+    columns = st.columns(3)
+    stage_modes = {}
+    for column, stage, label in zip(columns, ("conceptual", "dbt", "analysis"), ("Conceptual model", "dbt models", "Analytical interpretation")):
+        with column:
+            stage_modes[stage] = st.selectbox(label, ("deterministic", "agent"), key=f"mode_{stage}")
+    st.caption(f"No uploads uses the bundled sales data. Deterministic stages use its fixed fixtures; agent stages use Bedrock model `{configured_model_id()}`.")
     if st.button("Run workflow", type="primary"):
-        demo = mode == "Bundled deterministic demo"
         if files and not 2 <= len(files) <= 5:
             st.error("Upload 2 to 5 datasets.")
-        elif not files and not demo:
-            st.error("Upload 2 to 5 datasets for agent mode, or select the bundled demo.")
+        elif files and "deterministic" in stage_modes.values():
+            st.error("Deterministic stage fixtures require the bundled sales data. Select agent for all stages when using uploads.")
         else:
             input_dir = Path("runs") / "uploads"
             input_dir.mkdir(parents=True, exist_ok=True)
@@ -34,7 +39,6 @@ with request_tab:
                     path = input_dir / Path(file.name).name
                     path.write_bytes(file.getvalue())
                     paths.append(path)
-                demo = False
             else:
                 paths = write_demo(input_dir / "demo")
             status = st.status("Workflow running", expanded=True)
@@ -42,11 +46,14 @@ with request_tab:
             steps = []
 
             def update(event):
-                if event["kind"] in {"start", "done", "failure", "repair", "result"}:
-                    steps.append(f"{event['stage']}: {event['message']}")
+                if event["kind"] in {"start", "done", "failure", "repair", "result", "model_call", "tool_call"}:
+                    message = f"{event['stage']}: {event['message']}"
+                    if event["kind"] == "model_call" and event.get("detail"):
+                        message += f" · usage: {event['detail']}"
+                    steps.append(message)
                     progress.markdown("  \n".join(steps[-12:]))
 
-            state = run(paths, request, Path("runs"), demo=demo, on_event=update)
+            state = run(paths, request, Path("runs"), demo=not files, stage_modes=stage_modes, on_event=update)
             st.session_state["result"] = state
             status.update(label=f"Workflow {state['status']}", state="complete" if state["status"] == "complete" else "error")
             if state["status"] == "failed":
@@ -60,13 +67,19 @@ if state:
         with raw:
             name = st.selectbox("Raw dataset", state.get("raw_names", []), key="raw_select")
             if name:
-                st.dataframe(preview(database, "raw", name), use_container_width=True)
-                st.json(state.get("profiles", {}).get(name, {}))
+                if database.exists():
+                    st.dataframe(preview(database, "raw", name), use_container_width=True)
+                    st.json(state.get("profiles", {}).get(name, {}))
+                else:
+                    st.info("This run's DuckDB file has expired. Its profile and trace are still available.")
         with transformed:
             names = state.get("model_names", [])
             name = st.selectbox("Transformed dataset", names, key="model_select")
             if name:
-                st.dataframe(preview(database, "main", name), use_container_width=True)
+                if database.exists():
+                    st.dataframe(preview(database, "main", name), use_container_width=True)
+                else:
+                    st.info("This run's DuckDB file has expired. Its trace and dashboard artifacts are still available.")
                 st.success("dbt compile, build and test passed" if state["status"] == "complete" else "Build incomplete")
                 st.dataframe([r for r in state.get("dbt_results", []) if name in r["name"]], use_container_width=True)
         with model:
@@ -91,6 +104,7 @@ if state:
                 st.write("Assumptions:", plan["assumptions"])
     with trace_tab:
         plan = state.get("plan", {})
+        st.write("Stage modes:", state.get("stage_modes", {}))
         st.subheader("Interpretation")
         st.write(plan.get("objective", "Pending"))
         st.write("Assumptions:", plan.get("assumptions", []))
@@ -119,7 +133,7 @@ if state:
                 st.caption(view["finding"])
             st.subheader("Validated data preview")
             names = state.get("model_names", [])
-            if names:
+            if names and database.exists():
                 st.dataframe(preview(database, "main", next((n for n in names if n.startswith("fact_")), names[0])), use_container_width=True)
             for warning in state.get("quality_warnings", []):
                 st.warning(warning)
