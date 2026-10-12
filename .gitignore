@@ -7,3 +7,4 @@ runs/
 *.duckdb
 *.duckdb.wal
 .env
+checkpoints/
