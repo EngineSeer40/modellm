@@ -37,7 +37,7 @@ with request_tab:
             steps = []
 
             def update(event):
-                if event["kind"] in {"start", "done", "failure", "repair", "result", "model_call", "tool_call"}:
+                if event["kind"] in {"start", "done", "failure", "repair", "result", "model_call", "tool_call", "contract_check"}:
                     message = f"{event['stage']}: {event['message']}"
                     if event["kind"] == "model_call" and event.get("detail"):
                         message += f" · usage: {event['detail']}"
@@ -79,13 +79,13 @@ if state:
                 target = plan["target_model"]
                 lines = ["digraph G { rankdir=LR; node [shape=record];"]
                 for dimension in target["dimensions"]:
-                    label = f"{dimension['name']}|grain: {dimension['grain']}|natural: {dimension['natural_key']}|surrogate: {dimension['surrogate_key']}"
+                    label = f"{dimension['name']}|grain: {dimension['grain']}|natural: {', '.join(dimension['natural_key_fields'])}|surrogate: {dimension['surrogate_key']}"
                     lines.append(f'"{dimension["name"]}" [label="{{{label}}}"];')
                 for fact in target["facts"]:
-                    label = f"{fact['name']}|grain: {fact['grain']}|keys: {', '.join(fact['dimension_keys'])}"
+                    label = f"{fact['name']}|grain: {fact['grain']}|keys: {', '.join(link['fact_output_field'] for link in fact['dimension_links'])}"
                     lines.append(f'"{fact["name"]}" [label="{{{label}}}"];')
                     for dimension in target["dimensions"]:
-                        if dimension["surrogate_key"] in fact["dimension_keys"]:
+                        if any(link["dimension_model"] == dimension["name"] for link in fact["dimension_links"]):
                             lines.append(f'"{fact["name"]}" -> "{dimension["name"]}";')
                 lines.append("}")
                 st.graphviz_chart("\n".join(lines), use_container_width=True)
@@ -121,7 +121,7 @@ if state:
             for index, analysis in enumerate(analyses):
                 st.subheader(analysis["title"])
                 st.plotly_chart(pio.read_json(run_dir / f"chart_{index}.json"), use_container_width=True)
-                st.write(analysis["finding"])
+                st.write(state["findings"][index]["text"])
             st.subheader("Validated data preview")
             names = state.get("model_names", [])
             if names and database.exists():

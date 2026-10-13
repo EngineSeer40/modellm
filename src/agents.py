@@ -8,12 +8,13 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from src.core.prompt import ANALYSIS, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
-from src.tools.analysis_tools import DuckDBAnalysisTools, normalized_sql
+from src.core.prompt import ANALYSIS, ANALYSIS_FINDING, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
+from src.tools.analysis_tools import DuckDBAnalysisTools
 from src.tools.result_tools import DuckDBResultTools
 
 from .core.contracts import (
     AcceptedAnalysisResult,
+    AnalysisFinding,
     AnalysisPlan,
     AnalysisSpec,
     AnalyticalPlan,
@@ -136,6 +137,8 @@ def analyse(
     summaries: dict,
     emit: Callable,
     database: Path,
+    feedback: str = "",
+    previous: AnalysisPlan | None = None,
 ) -> AnalysisPlan:
 
     db = DuckDBAnalysisTools(database, list(model_schemas))
@@ -146,6 +149,8 @@ def analyse(
             "analytical_plan": plan.model_dump(),
             "validated_schemas": model_schemas,
             "model_summaries": summaries,
+            "previous_analysis": previous.model_dump() if previous else None,
+            "previous_acceptance_error": feedback,
         },
         default=str,
     )
@@ -162,19 +167,52 @@ def analyse(
         ],
     )
 
-    # uninspected = [
-    #     spec.title for spec in result.analyses
-    #     if not db.inspected_queries.get(normalized_sql(spec.sql), False)
-    # ]
-    # if uninspected:
-    #     raise ValueError(f"Analysis SQL was not fully inspected with query_data: {uninspected}")
-
     return result
+
+
+def interpret(
+    spec: AnalysisSpec,
+    result: AcceptedAnalysisResult,
+    emit: Callable,
+    database: Path,
+    feedback: str = "",
+) -> AnalysisFinding:
+    db = DuckDBResultTools(
+        database=database,
+        relation=result.relation,
+        columns=set(result.columns),
+        spec=spec,
+    )
+    prompt = json.dumps(
+        {
+            "title": spec.title,
+            "question": spec.question,
+            "rationale": spec.rationale,
+            "population_definition": spec.population_definition,
+            "observation_rule": spec.observation_rule,
+            "grain": spec.grain,
+            "dimensions": [item.model_dump() for item in spec.dimensions],
+            "measures": [item.model_dump() for item in spec.measures],
+            "variant_field": spec.variant_field,
+            "result": result.model_dump(),
+            "previous_finding_error": feedback,
+        },
+        default=str,
+    )
+    return invoke(
+        prompt,
+        AnalysisFinding,
+        "analytical finding",
+        emit,
+        ANALYSIS_FINDING,
+        tools=[db.category_counts, db.grouped_summary],
+    )
 
 
 def plot(
     spec: AnalysisSpec,
     result: AcceptedAnalysisResult,
+    finding: str,
     emit: Callable,
     database: Path,
 ) -> PlotSpec:
@@ -189,7 +227,7 @@ def plot(
         {
             "title": spec.title,
             "question": spec.question,
-            "finding": spec.finding,
+            "finding": finding,
             "visualisation_goal": spec.visualisation_goal,
             "analytical_result": {
                 "grain": spec.grain,

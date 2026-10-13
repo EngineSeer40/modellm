@@ -10,6 +10,7 @@ from sqlglot import exp
 from strands import tool
 
 MAX_ANALYSIS_ROWS = 5000
+POPULATION_CTE = "__modellm_population"
 
 
 def validate_analysis_sql(sql: str, model_names: list[str]) -> str:
@@ -44,6 +45,29 @@ def validate_analysis_sql(sql: str, model_names: list[str]) -> str:
             "csv_scan",
         }:
             raise ValueError(f"Analysis SQL cannot call {name}")
+    return sql.strip().rstrip(";")
+
+
+def validate_variant_sql(sql: str) -> str:
+    """Allow a variant to read only the application's shared population CTE."""
+    statements = sqlglot.parse(sql, read="duckdb")
+    if len(statements) != 1 or not isinstance(statements[0], (exp.Select, exp.Union)):
+        raise ValueError("Analysis variant must be one SELECT query")
+    expression = statements[0]
+    ctes = {cte.alias_or_name.lower() for cte in expression.find_all(exp.CTE)}
+    if POPULATION_CTE in ctes:
+        raise ValueError(f"Analysis variant cannot redefine {POPULATION_CTE}")
+    population_seen = False
+    for table in expression.find_all(exp.Table):
+        if table.catalog or table.db:
+            raise ValueError("Analysis variant may read only the shared population")
+        if table.name.lower() in ctes:
+            continue
+        if table.name.lower() != POPULATION_CTE:
+            raise ValueError(f"Analysis variant references another table: {table.sql()}")
+        population_seen = True
+    if not population_seen:
+        raise ValueError("Analysis variant must read the shared population")
     return sql.strip().rstrip(";")
 
 

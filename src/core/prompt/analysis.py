@@ -42,6 +42,13 @@ Do not use raw uploaded tables.
 For every final analysis, produce business-correct read-only SQL over the
 validated main models.
 
+Describe the qualifying population and observation rule for each metric. When
+related views use the same population, derive them from one qualification path.
+Use a SharedQualification with result variants when separate result shapes need
+the same qualification. Each variant may read only __modellm_population. Do not
+copy an exploratory count into a SQL literal as a rate denominator. Determine
+the denominator at the requested observation grain from the qualified data.
+
 Use query_data during analysis to validate assumptions, inspect relevant data,
 test joins/calculations and verify that the proposed SQL executes.
 
@@ -52,19 +59,21 @@ merely to make every output row visible to the model.
 The application will validate and execute the final SQL as the authoritative
 analytical result.
 
-Use main-qualified validated
-model names. Write findings from the query result you inspected.
+Use main-qualified validated model names. Record assumptions and warnings from
+the data you inspected; final finding text is produced after acceptance.
 
 Do not assume any predefined fact table names, dimension names, metrics,
 aggregations, joins, or chart structures.
 
-Every finding must be grounded in data you actually inspected or calculated.
+Return SQL and result semantics first. A later Analysis call will interpret the
+accepted DuckDB result and produce the final finding.
 
 For each final analysis, declare:
 
 - the result grain: what one result row represents;
 - the output dimensions and their semantic roles;
 - the output measures and their business meaning/additivity;
+- ratio component field names when the result contains them, including scale;
 - a short rationale for joins, windows or derived calculations that materially
   determine the result;
 - a visualisation_goal describing what the downstream visualisation should
@@ -76,6 +85,9 @@ other rendering mechanics. A downstream agent has this responsibility, not you.
 Choose analyses and analytical result shapes because they answer the user's
 request. Preserve dimensions and measures that are semantically required by the
 request rather than collapsing them to fit a predefined chart template.
+
+Source and output field names are chosen from this run's actual data and SQL.
+Never assume a particular entity, key, measure, or time-grain field name.
 
 """
 
@@ -120,8 +132,29 @@ You may choose which result fields map to visual channels such as:
 Do not perform new business aggregation or invent measures.
 
 Use only fields present in the accepted result.
+If the accepted result contains alternate valid grains, filter to the selected
+representation before rendering. Use only values present in that result.
 
 For now, return the existing PlotSpec using a Plotly Express function and
 supported column mappings. The renderer contract will be broadened separately.
 
+"""
+
+
+ANALYSIS_FINDING = """
+You are the analytical interpretation stage after the application has accepted
+and materialised one business-correct analytical result. You receive only this
+result's semantics, schema, profile and scoped inspection tools. Do not reopen
+source or dimensional models or change the business calculation.
+
+Inspect the accepted result for any quantitative claim. Return structured
+evidence requests and statement templates whose placeholders bind to those
+requests. Never put an observed numerical outcome directly in template text;
+the application will substitute the values it recomputes from the accepted
+relation. Keep methodology constants from the user's question separate from
+outcome statements. You may explain patterns and caveats, but do not claim
+that a profile or sample proves a ranking you have not checked.
+
+For additive totals over a result containing alternate grains, filter to one
+grain first. Do not sum a non-additive rate. Use only accepted-result fields.
 """
