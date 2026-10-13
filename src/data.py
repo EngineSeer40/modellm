@@ -11,18 +11,44 @@ def identifier(value: str) -> str:
 
 
 def load_raw(database: Path, paths: list[Path]) -> list[str]:
-    if not 2 <= len(paths) <= 5:
-        raise ValueError("Provide 2 to 5 datasets")
+    if not 2 <= len(paths) <= 6:
+        raise ValueError("Provide 2 to 6 datasets")
     names = [identifier(re.sub(r"[^a-z0-9]+", "_", p.stem.lower()).strip("_")) for p in paths]
     if len(set(names)) != len(names):
         raise ValueError("Dataset names must be distinct")
+    readers = {
+        ".csv": "read_csv_auto",
+        ".parquet": "read_parquet",
+        ".json": "read_json",
+        ".jsonl": "read_json",
+        ".ndjson": "read_json",
+    }
     with duckdb.connect(str(database)) as con:
         con.execute("CREATE SCHEMA IF NOT EXISTS raw")
         for name, path in zip(names, paths):
-            if path.suffix.lower() not in {".csv", ".parquet"}:
+            suffix = path.suffix.lower()
+            reader = readers.get(suffix)
+            if reader is None:
                 raise ValueError(f"Unsupported file: {path.name}")
-            reader = "read_csv_auto" if path.suffix.lower() == ".csv" else "read_parquet"
-            con.execute(f'CREATE OR REPLACE TABLE raw."{name}" AS SELECT * FROM {reader}(?)', [str(path.resolve())])
+            con.execute(
+                f'CREATE OR REPLACE TABLE raw."{name}" AS SELECT * FROM {reader}(?)',
+                [str(path.resolve())],
+            )
+            if suffix in {".json", ".jsonl", ".ndjson"}:
+                fields = con.execute(f'DESCRIBE raw."{name}"').fetchall()
+                rows = con.execute(f'SELECT count(*) FROM raw."{name}"').fetchone()[0]
+                wrapped_records = (
+                    rows == 1
+                    and len(fields) == 1
+                    and fields[0][1].startswith("STRUCT(")
+                    and fields[0][1].endswith("[]")
+                )
+                if wrapped_records:
+                    con.execute(f'DROP TABLE raw."{name}"')
+                    raise ValueError(
+                        f"{path.name} contains a wrapped record array in '{fields[0][0]}'. "
+                        "Upload the array of records itself or use JSON Lines."
+                    )
     return names
 
 

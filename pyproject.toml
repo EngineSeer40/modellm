@@ -13,9 +13,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
-[project.scripts]
-modellm-demo = "src.workflow:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

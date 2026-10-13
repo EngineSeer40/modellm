@@ -5,43 +5,33 @@ import streamlit as st
 
 from src.agents import configured_model_id
 from src.data import preview
-from src.demo import REQUEST, write_demo
 from src.storage import DUCKDB_FILENAME
 from src.workflow import run
 
 st.set_page_config(page_title="ModelLM", layout="wide")
 st.title("ModelLM · modelling and BI spike")
-st.caption("Raw CSV/Parquet → DuckDB → analytical plan → dbt validation → Plotly dashboard")
+st.caption("Raw CSV/Parquet/JSON → DuckDB → analytical plan → dbt validation → Plotly dashboard")
 
 request_tab, data_tab, trace_tab, dashboard_tab = st.tabs(["Request", "Data", "Agent Trace", "Dashboard"])
 state = st.session_state.get("result")
 
 with request_tab:
-    request = st.text_area("Business request", value=REQUEST, height=100)
-    files = st.file_uploader("Upload 2–5 related CSV or Parquet datasets", type=["csv", "parquet"], accept_multiple_files=True)
-    st.subheader("Agent calls")
-    columns = st.columns(3)
-    stage_modes = {}
-    for column, stage, label in zip(columns, ("conceptual", "dbt", "analysis"), ("Conceptual model", "dbt models", "Analytical interpretation")):
-        with column:
-            stage_modes[stage] = st.selectbox(label, ("deterministic", "agent"), key=f"mode_{stage}")
-    st.caption(f"No uploads uses the bundled sales data. Deterministic stages use its fixed fixtures; agent stages use Bedrock model `{configured_model_id()}`.")
+    request = st.text_area("Business request", height=100)
+    files = st.file_uploader("Upload 2–6 related CSV, Parquet or JSON datasets", type=["csv", "parquet", "json", "jsonl", "ndjson"], accept_multiple_files=True)
+    st.caption(f"Agent model: `{configured_model_id()}`")
     if st.button("Run workflow", type="primary"):
-        if files and not 2 <= len(files) <= 5:
-            st.error("Upload 2 to 5 datasets.")
-        elif files and "deterministic" in stage_modes.values():
-            st.error("Deterministic stage fixtures require the bundled sales data. Select agent for all stages when using uploads.")
+        if not request.strip():
+            st.error("Enter a business request.")
+        elif not 2 <= len(files) <= 6:
+            st.error("Upload 2 to 6 datasets.")
         else:
             input_dir = Path("runs") / "uploads"
             input_dir.mkdir(parents=True, exist_ok=True)
-            if files:
-                paths = []
-                for file in files:
-                    path = input_dir / Path(file.name).name
-                    path.write_bytes(file.getvalue())
-                    paths.append(path)
-            else:
-                paths = write_demo(input_dir / "demo")
+            paths = []
+            for file in files:
+                path = input_dir / Path(file.name).name
+                path.write_bytes(file.getvalue())
+                paths.append(path)
             status = st.status("Workflow running", expanded=True)
             progress = st.empty()
             steps = []
@@ -54,7 +44,7 @@ with request_tab:
                     steps.append(message)
                     progress.markdown("  \n".join(steps[-12:]))
 
-            state = run(paths, request, Path("runs"), demo=not files, stage_modes=stage_modes, on_event=update)
+            state = run(paths, request, Path("runs"), on_event=update)
             st.session_state["result"] = state
             status.update(label=f"Workflow {state['status']}", state="complete" if state["status"] == "complete" else "error")
             if state["status"] == "failed":
@@ -105,7 +95,6 @@ if state:
                 st.write("Assumptions:", plan["assumptions"])
     with trace_tab:
         plan = state.get("plan", {})
-        st.write("Stage modes:", state.get("stage_modes", {}))
         st.subheader("Interpretation")
         st.write(plan.get("objective", "Pending"))
         st.write("Assumptions:", plan.get("assumptions", []))
