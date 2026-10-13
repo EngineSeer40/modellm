@@ -104,12 +104,63 @@ class DbtImplementation(BaseModel):
     explanation: str
 
 
+class AnalysisDimension(BaseModel):
+    field: str
+    semantic_type: Literal[
+        "temporal",
+        "categorical",
+        "ordinal",
+        "geographic",
+        "identifier",
+        "other",
+    ]
+    description: str
+
+
+class AnalysisMeasure(BaseModel):
+    field: str
+    semantic_type: Literal[
+        "count",
+        "currency",
+        "percentage",
+        "ratio",
+        "quantity",
+        "duration",
+        "numeric",
+        "other",
+    ]
+    description: str
+    additivity: Literal[
+        "additive",
+        "semi_additive",
+        "non_additive",
+    ]
+
+
 class AnalysisSpec(BaseModel):
-    title: str
-    question: str
-    sql: str
-    finding: str
-    visualisation_intent: str
+    title: str = Field(description="Title of this analysis")
+    question: str = Field(description="User question that is being answered")
+
+    sql: str = Field(
+        description="Business-correct final transformation over validated dbt models"
+    )
+
+    rationale: str = Field(
+        description="Why this transformation / grain answers the user question."
+    )
+
+    grain: str = Field(
+        description="Human-readable declaration of one row in the result. Example: one row per churn date, age group and gender"
+    )
+
+    dimensions: list[AnalysisDimension]
+    measures: list[AnalysisMeasure]
+
+    finding: str = Field(description="Evidence-based analytical interpretation.")
+
+    visualisation_goal: str = Field(
+        description="What the result should communicate, without naming chart mechanics."
+    )
 
 
 class AnalysisPlan(BaseModel):
@@ -117,8 +168,33 @@ class AnalysisPlan(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ResultColumnProfile(BaseModel):
+    column_name: str
+    column_type: str
+    min: str | None = None
+    max: str | None = None
+    approx_unique: int | None = None
+    avg: str | None = None
+    std: str | None = None
+    q25: str | None = None
+    q50: str | None = None
+    q75: str | None = None
+    count: int
+    null_percentage: str | float | None = None
+
+
+class AcceptedAnalysisResult(BaseModel):
+    result_id: str
+    relation: str
+    row_count: int
+    columns: dict[str, str]
+    profile: list[ResultColumnProfile]
+
+
 class PlotSpec(BaseModel):
-    function: str = Field(description="Plotly Express chart function, such as line, histogram, box, or treemap")
+    function: str = Field(
+        description="Plotly Express chart function, such as line, histogram, box, or treemap"
+    )
     columns: dict[str, str | list[str]] = Field(
         default_factory=dict,
         description="Plotly Express column arguments, using only DataFrame column names",

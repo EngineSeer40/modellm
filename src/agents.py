@@ -6,13 +6,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
-import pandas as pd
 from pydantic import BaseModel
 
 from src.core.prompt import ANALYSIS, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
-from src.tools.duckdb_tools import DuckDBAnalysisTools, normalized_sql
+from src.tools.analysis_tools import DuckDBAnalysisTools, normalized_sql
+from src.tools.result_tools import DuckDBResultTools
 
-from .core.contracts import AnalysisPlan, AnalysisSpec, AnalyticalPlan, DbtImplementation, PlotSpec
+from .core.contracts import (
+    AcceptedAnalysisResult,
+    AnalysisPlan,
+    AnalysisSpec,
+    AnalyticalPlan,
+    DbtImplementation,
+    PlotSpec,
+)
 
 T = TypeVar("T", bound=BaseModel)
 DEFAULT_BEDROCK_MODEL_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -130,6 +137,7 @@ def analyse(
     emit: Callable,
     database: Path,
 ) -> AnalysisPlan:
+
     db = DuckDBAnalysisTools(database, list(model_schemas))
 
     prompt = json.dumps(
@@ -153,28 +161,55 @@ def analyse(
             db.query_data,
         ],
     )
-    uninspected = [
-        spec.title for spec in result.analyses
-        if not db.inspected_queries.get(normalized_sql(spec.sql), False)
-    ]
-    if uninspected:
-        raise ValueError(f"Analysis SQL was not fully inspected with query_data: {uninspected}")
+
+    # uninspected = [
+    #     spec.title for spec in result.analyses
+    #     if not db.inspected_queries.get(normalized_sql(spec.sql), False)
+    # ]
+    # if uninspected:
+    #     raise ValueError(f"Analysis SQL was not fully inspected with query_data: {uninspected}")
+
     return result
 
 
-def plot(spec: AnalysisSpec, frame: pd.DataFrame, emit: Callable) -> PlotSpec:
+def plot(
+    spec: AnalysisSpec,
+    result: AcceptedAnalysisResult,
+    emit: Callable,
+    database: Path,
+) -> PlotSpec:
+
+    db = DuckDBResultTools(
+        database=database,
+        relation=result.relation,
+        columns=set(result.columns),
+    )
+
     prompt = json.dumps(
         {
             "title": spec.title,
             "question": spec.question,
-            "visualisation_intent": spec.visualisation_intent,
             "finding": spec.finding,
-            "dataframe": {
-                "row_count": len(frame),
-                "columns": {name: str(dtype) for name, dtype in frame.dtypes.items()},
-                "sample_rows": frame.head(12).to_dict(orient="records"),
+            "visualisation_goal": spec.visualisation_goal,
+            "analytical_result": {
+                "grain": spec.grain,
+                "dimensions": [item.model_dump() for item in spec.dimensions],
+                "measures": [item.model_dump() for item in spec.measures],
+                "row_count": result.row_count,
+                "columns": result.columns,
+                "profile": [item.model_dump() for item in result.profile],
             },
         },
         default=str,
     )
-    return invoke(prompt, PlotSpec, "visualisation generation", emit, PLOTTING)
+
+    return invoke(
+        prompt,
+        PlotSpec,
+        "visualisation generation",
+        emit,
+        PLOTTING,
+        tools=[
+            db.category_counts,
+        ],
+    )

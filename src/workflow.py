@@ -7,12 +7,11 @@ from typing import Callable
 
 from . import agents
 from .analysis import (
+    accept_analyses,
     demo_analysis,
-    demo_metrics,
     demo_plot,
-    materialize_analyses,
+    load_result_frame,
     render_plot,
-    result_metrics,
     summarize_models,
 )
 from .core.contracts import AnalysisPlan, AnalyticalPlan, DbtImplementation, plan_issues
@@ -245,14 +244,19 @@ def run(
             "start",
             f"Selecting metrics and visuals from validated tables ({modes['analysis']})",
         )
-        if modes["analysis"] == "deterministic" and "fact_order_items" not in model_names:
+        if (
+            modes["analysis"] == "deterministic"
+            and "fact_order_items" not in model_names
+        ):
             raise ValueError(
                 "Deterministic analysis fixture needs fact_order_items; select the analysis agent for these dbt models."
             )
         analysis = (
             demo_analysis()
             if modes["analysis"] == "deterministic"
-            else agents.analyse(request, plan, state["model_schemas"], summaries, emit, database)
+            else agents.analyse(
+                request, plan, state["model_schemas"], summaries, emit, database
+            )
         )
         state["analysis"] = analysis.model_dump()
         emit(
@@ -261,17 +265,36 @@ def run(
             f"Selected {len(analysis.analyses)} analytical queries",
         )
 
-        emit("metric generation", "start", "Executing analytical SQL into pandas DataFrames")
-        results = materialize_analyses(database, model_names, analysis)
+        emit(
+            "analysis acceptance",
+            "start",
+            "Validating and registering analytical results in DuckDB",
+        )
+
+        accepted_results = accept_analyses(
+            database,
+            model_names,
+            analysis,
+        )
+
         state["analysis_results"] = []
-        for spec, frame in results:
-            state["analysis_results"].append({
-                "title": spec.title,
-                "rows": len(frame),
-                "columns": list(frame.columns),
-            })
-        state["metrics"] = demo_metrics(database) if modes["analysis"] == "deterministic" else result_metrics(results)
-        emit("metric generation", "done", f"Calculated {len(state['metrics'])} metrics")
+
+        for spec, accepted_result in accepted_results:
+            state["analysis_results"].append(
+                {
+                    "title": spec.title,
+                    "result_id": accepted_result.result_id,
+                    "relation": accepted_result.relation,
+                    "rows": accepted_result.row_count,
+                    "columns": accepted_result.columns,
+                }
+            )
+
+        emit(
+            "analysis acceptance",
+            "done",
+            f"Accepted {len(accepted_results)} analytical results",
+        )
 
         emit(
             "visualisation generation",
@@ -280,7 +303,12 @@ def run(
         )
         state["plot_specs"] = []
         for index, (spec, frame) in enumerate(results):
-            plot = demo_plot(spec) if modes["analysis"] == "deterministic" else agents.plot(spec, frame, emit)
+            plot = (
+                demo_plot(spec)
+                if modes["analysis"] == "deterministic"
+                else agents.plot(spec, frame, emit)
+            )
+            frame = load_result_frame(database, accepted_result)
             fig = render_plot(frame, plot, spec.title)
             state["plot_specs"].append(plot.model_dump())
             fig.write_json(run_dir / f"chart_{index}.json")

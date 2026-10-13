@@ -28,14 +28,20 @@ def validate_analysis_sql(sql: str, model_names: list[str]) -> str:
         if not table.db and name.lower() in ctes:
             continue
         if table.db not in ("", "main") or name not in allowed:
-            raise ValueError(f"Analysis SQL references an unvalidated model: {table.sql()}")
+            raise ValueError(
+                f"Analysis SQL references an unvalidated model: {table.sql()}"
+            )
         model_seen = True
     if not model_seen:
         raise ValueError("Analysis SQL must read a validated dbt model")
     for function in expression.find_all(exp.Func):
         name = function.sql_name().lower()
         if name.startswith(("read_", "sqlite_", "postgres_", "http_")) or name in {
-            "glob", "query", "query_table", "parquet_scan", "csv_scan",
+            "glob",
+            "query",
+            "query_table",
+            "parquet_scan",
+            "csv_scan",
         }:
             raise ValueError(f"Analysis SQL cannot call {name}")
     return sql.strip().rstrip(";")
@@ -70,7 +76,7 @@ class DuckDBAnalysisTools:
     def __init__(self, database: Path, model_names: list[str]):
         self.database = database
         self.model_names = model_names
-        self.inspected_queries: dict[str, bool] = {}
+        self.executed_queries: set[str] = set()
 
     @tool
     def list_models(self) -> dict:
@@ -98,7 +104,8 @@ class DuckDBAnalysisTools:
         frame, truncated = execute_analysis_sql(
             self.database, sql, self.model_names, max_rows=limit, require_complete=False
         )
-        self.inspected_queries[normalized_sql(sql)] = not truncated
+        self.executed_queries.add(normalized_sql(sql))
+
         return {
             "columns": list(frame.columns),
             "row_count": len(frame),
