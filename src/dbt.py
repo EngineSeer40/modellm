@@ -80,7 +80,11 @@ def write_project(
         ):
             raise ValueError(f"Invalid dbt path: {file.path}")
         if path.suffix == ".yml":
-            yaml.safe_load(file.content)
+            document = yaml.safe_load(file.content)
+            if not isinstance(document, dict):
+                raise ValueError("schema.yml must contain a YAML mapping")
+            if "sources" in document:
+                raise ValueError("schema.yml must omit sources:; the application writes all source definitions in sources.yml")
         (models / path).write_text(file.content)
 
 

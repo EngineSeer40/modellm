@@ -1,105 +1,205 @@
-import re
-from typing import Literal
+"""Run-scoped declarations. Explanations communicate intent; references are checked."""
 
-from pydantic import BaseModel, Field, model_validator
+from typing import Any, Literal
+from uuid import uuid4
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-class BusinessProcessPlan(BaseModel):
-    name: str
-    description: str
-    source_datasets: list[str]
+CONTRACT_VERSION = 3
 
 
-class SourceFieldRef(BaseModel):
-    dataset: str = Field(min_length=1)
-    column: str = Field(min_length=1)
+class Contract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-class PlannedOutputField(BaseModel):
-    name: str = Field(min_length=1)
-    description: str
-    inputs: list[SourceFieldRef] = Field(default_factory=list)
-    derivation: str | None = None
+class ValidationIssue(Contract):
+    boundary: str
+    code: str
+    path: str
+    message: str
+    expected: Any = None
+    observed: Any = None
+
+    def __str__(self):
+        return f"{self.path}: {self.message}"
+
+
+class FieldRef(Contract):
+    kind: Literal["source", "model"]
+    dataset: str | None = Field(
+        default=None,
+        description="For source: exact dataset from this run's profile; otherwise null",
+    )
+    model: str | None = Field(
+        default=None,
+        description="For model: a model declared in this plan; otherwise null",
+    )
+    column: str = Field(
+        min_length=1, description="Exact column name, including spaces and punctuation"
+    )
 
     @model_validator(mode="after")
-    def has_lineage(self):
-        if not self.inputs and not self.derivation:
-            raise ValueError("Planned output needs source inputs or a derivation")
+    def reference_target(self):
+        if self.kind == "source" and (not self.dataset or self.model is not None):
+            raise ValueError(
+                "A source reference needs dataset and column, with model null"
+            )
+        if self.kind == "model" and (not self.model or self.dataset is not None):
+            raise ValueError(
+                "A model reference needs model and column, with dataset null"
+            )
         return self
 
 
-class JoinEndpoint(BaseModel):
-    kind: Literal["source", "model"]
-    container: str = Field(min_length=1)
-    column: str = Field(min_length=1)
+class OutputKeyPair(Contract):
+    fact_field: str
+    dimension_field: str
 
 
-class JoinStep(BaseModel):
-    left: JoinEndpoint
-    right: JoinEndpoint
-    rule: str | None = None
+class MatchPair(Contract):
+    left: FieldRef
+    right: FieldRef
 
 
-class SourceMatchPath(BaseModel):
+class MatchStep(Contract):
+    pairs: list[MatchPair] = Field(
+        min_length=1,
+        description="Pairs jointly define the match; all right endpoints name one destination",
+    )
+    matching_rule: str | None = None
+
+
+class SourceMatchPath(Contract):
     source_dataset: str
-    steps: list[JoinStep] = Field(min_length=1)
+    steps: list[MatchStep] = Field(min_length=1)
 
 
-class FactDimensionLink(BaseModel):
-    fact_output_field: str
+class FactDimensionLink(Contract):
     dimension_model: str
-    dimension_key_field: str
+    key_pairs: list[OutputKeyPair] = Field(
+        min_length=1,
+        description="References to canonical outputs; supports composite keys",
+    )
     source_paths: list[SourceMatchPath] = Field(min_length=1)
     unmatched_policy: Literal["null", "unknown_member", "exclude", "other"]
     unmatched_explanation: str | None = None
 
 
-class DimensionPlan(BaseModel):
+# ----- CONCEPTUAL -----
+
+
+class FieldDefinition(Contract):
+    kind: Literal["copy", "derive", "constant", "generate"]
+    inputs: list[FieldRef] = Field(
+        description="copy: one reference; derive: actual inputs; constant/generate: empty list"
+    )
+    explanation: str | None = Field(
+        default=None,
+        description="Transformation intent for derive, purpose for constant, generation rule for generate; dbt writes the SQL",
+    )
+    value: Any = Field(
+        default=None,
+        description="For constant: actual JSON scalar (string, number, boolean or null); otherwise omit",
+    )
+
+    @model_validator(mode="after")
+    def definition_shape(self):
+        if self.kind == "copy" and len(self.inputs) != 1:
+            raise ValueError("copy needs exactly one input reference")
+        if self.kind == "derive" and not self.inputs:
+            raise ValueError("derive needs its actual field inputs")
+        if self.kind in {"constant", "generate"} and self.inputs:
+            raise ValueError(
+                f"{self.kind} has no field inputs; use derive for input-dependent values"
+            )
+        if self.kind != "copy" and not (self.explanation and self.explanation.strip()):
+            raise ValueError(f"{self.kind} needs an explanation")
+        if self.kind == "constant":
+            if "value" not in self.model_fields_set:
+                raise ValueError(
+                    "constant needs an explicit value, including null when intended"
+                )
+            if self.value is not None and type(self.value) not in (
+                str,
+                int,
+                float,
+                bool,
+            ):
+                raise ValueError("constant value must be a JSON scalar")
+        elif self.value is not None:
+            raise ValueError("Only constant has a literal value")
+        return self
+
+
+class MeasureSemantics(Contract):
+    additivity: Literal["additive", "semi_additive", "non_additive"]
+
+
+class ModelOutput(Contract):
+    name: str = Field(
+        min_length=1,
+        description="Exact output column dbt must emit; declare it only once",
+    )
+    description: str = Field(min_length=1, description="Business meaning of the output")
+    definition: FieldDefinition
+    measure: MeasureSemantics | None = Field(
+        default=None,
+        description="Measure metadata when this output is a measure; otherwise null",
+    )
+
+
+class BusinessProcessPlan(Contract):
+    name: str
+    description: str
+    source_datasets: list[str]
+
+
+class DimensionPlan(Contract):
     name: str = Field(pattern=r"^dim_[a-z][a-z0-9_]*$")
     business_entity: str
     grain: str
     source_datasets: list[str]
-    natural_key_fields: list[str] = Field(default_factory=list)
+    natural_key_fields: list[str] = Field(
+        description="Declared identity outputs, or an empty list"
+    )
     surrogate_key: str | None = None
-    output_fields: list[PlannedOutputField] = Field(min_length=1)
-    grain_key_fields: list[str] = Field(default_factory=list)
+    output_fields: list[ModelOutput] = Field(min_length=1)
+    grain_key_fields: list[str] = Field(
+        description="Outputs whose combined uniqueness is justified; otherwise an empty list"
+    )
 
 
-class FactMeasure(BaseModel):
-    name: str
-    source_expression: str
-    additivity: Literal["additive", "semi_additive", "non_additive"]
-    inputs: list[SourceFieldRef] = Field(default_factory=list)
-    derivation: str | None = None
-
-    @model_validator(mode="after")
-    def has_lineage(self):
-        if not self.inputs and not self.derivation:
-            raise ValueError("Fact measure needs source inputs or a derivation")
-        return self
-
-
-class FactPlan(BaseModel):
+class FactPlan(Contract):
     name: str = Field(pattern=r"^fact_[a-z][a-z0-9_]*$")
     business_process: str
     fact_type: Literal[
         "transaction", "periodic_snapshot", "accumulating_snapshot", "factless"
     ]
     grain: str
+    modelling_rationale: str = Field(
+        min_length=1,
+        description="Why this is a reusable business process at this grain",
+    )
     source_datasets: list[str]
-    dimension_links: list[FactDimensionLink] = Field(default_factory=list)
-    measures: list[FactMeasure]
-    output_fields: list[PlannedOutputField] = Field(min_length=1)
-    grain_key_fields: list[str] = Field(default_factory=list)
+    dimension_links: list[FactDimensionLink] = Field(
+        description="Declared links, or an empty list for a fact without dimensions"
+    )
+    output_fields: list[ModelOutput] = Field(
+        min_length=1,
+        description="Every output once, with measure metadata on measure fields",
+    )
+    grain_key_fields: list[str] = Field(
+        description="Outputs whose combined uniqueness is justified; otherwise an empty list"
+    )
 
 
-class DimensionalModelPlan(BaseModel):
+class DimensionalModelPlan(Contract):
     business_processes: list[BusinessProcessPlan]
     dimensions: list[DimensionPlan]
     facts: list[FactPlan]
 
 
-class AnalyticalPlan(BaseModel):
+class AnalyticalPlan(Contract):
     objective: str
     business_questions: list[str]
     assumptions: list[str]
@@ -107,176 +207,268 @@ class AnalyticalPlan(BaseModel):
     target_model: DimensionalModelPlan
 
 
+# ----------------------
+
+
+def field_inputs(field: ModelOutput) -> list[FieldRef]:
+    return field.definition.inputs
+
+
+def ref_container(ref: FieldRef) -> tuple[str, str]:
+    return (ref.kind, ref.dataset if ref.kind == "source" else ref.model)
+
+
 def plan_issues(
     plan: AnalyticalPlan, profiles: dict, relationships: list[dict] | None = None
-) -> list[str]:
-    """Check this run's source and output references before dbt generation."""
+) -> list[ValidationIssue]:
+    """Resolve declarations against this run; do not interpret transformation prose."""
+    issues: list[ValidationIssue] = []
     target = plan.target_model
-    issues: list[str] = []
-    source_columns = {
-        dataset: {column["name"] for column in profile["columns"]}
-        for dataset, profile in profiles.items()
-    }
-    process_names = {process.name for process in target.business_processes}
-    fact_processes = {fact.business_process for fact in target.facts}
     models = target.dimensions + target.facts
-    model_names = [model.name for model in models]
-    if len(model_names) != len(set(model_names)):
-        issues.append("Planned model names must be distinct")
-    outputs = {
-        model.name: {field.name for field in model.output_fields} for model in models
+    sources = {
+        name: {col["name"] for col in p["columns"]} for name, p in profiles.items()
     }
-    dimensions = {dimension.name: dimension for dimension in target.dimensions}
+    outputs = {m.name: {f.name for f in m.output_fields} for m in models}
+    dimensions = {m.name: m for m in target.dimensions}
+    processes = {p.name for p in target.business_processes}
+    field_graph: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    model_graph: dict[str, set[str]] = {m.name: set() for m in models}
 
-    def check_source(ref: SourceFieldRef, location: str, declared: list[str]) -> None:
-        if ref.dataset not in source_columns:
-            issues.append(f"{location} references unknown source {ref.dataset}")
-        elif ref.column not in source_columns[ref.dataset]:
-            issues.append(
-                f"{location} references missing source field "
-                f"{ref.dataset}.{ref.column}; available: {sorted(source_columns[ref.dataset])}"
+    def issue(code, path, message, expected=None, observed=None):
+        issues.append(
+            ValidationIssue(
+                boundary="conceptual",
+                code=code,
+                path=path,
+                message=message,
+                expected=expected,
+                observed=observed,
             )
-        if ref.dataset not in declared:
-            issues.append(f"{location} uses undeclared source {ref.dataset}")
+        )
 
+    def reference(ref, path, declared):
+        if ref.kind == "source":
+            if ref.dataset not in sources:
+                issue(
+                    "unknown_source",
+                    path,
+                    f"Unknown source {ref.dataset}",
+                    sorted(sources),
+                    ref.dataset,
+                )
+            elif ref.column not in sources[ref.dataset]:
+                issue(
+                    "missing_source_field",
+                    path,
+                    f"Missing source field {ref.dataset}.{ref.column}",
+                    sorted(sources[ref.dataset]),
+                    ref.column,
+                )
+            if ref.dataset not in declared:
+                issue(
+                    "undeclared_source",
+                    path,
+                    f"Source {ref.dataset} is outside the declared source scope",
+                    declared,
+                    ref.dataset,
+                )
+        elif ref.model not in outputs or ref.column not in outputs[ref.model]:
+            issue(
+                "missing_planned_field",
+                path,
+                f"Missing planned output {ref.model}.{ref.column}",
+                sorted(outputs.get(ref.model, [])),
+                ref.column,
+            )
+
+    def output(model, name, path):
+        if name not in outputs.get(model, set()):
+            issue(
+                "missing_planned_field",
+                path,
+                f"Missing planned output {model}.{name}",
+                sorted(outputs.get(model, [])),
+                name,
+            )
+
+    if len(outputs) != len(models):
+        issue("duplicate_model", "target_model", "Model names must be distinct")
+    if len(processes) != len(target.business_processes):
+        issue(
+            "duplicate_process", "business_processes", "Process names must be distinct"
+        )
     if not target.facts:
-        issues.append("The plan has no fact table")
+        issue("missing_fact", "facts", "The plan has no fact table")
     for process in target.business_processes:
-        if process.name not in fact_processes:
-            issues.append(f"Business process {process.name} has no fact table")
-    for fact in target.facts:
-        if fact.business_process not in process_names:
-            issues.append(
-                f"Fact {fact.name} refers to undefined business process {fact.business_process}"
-            )
-        for measure in fact.measures:
-            if re.search(
-                r"\b(sum|count|avg|min|max)\s*\(",
-                measure.source_expression,
-                re.IGNORECASE,
-            ):
-                issues.append(
-                    f"Fact {fact.name} measure {measure.name} embeds an aggregate expression"
+        if not any(f.business_process == process.name for f in target.facts):
+            issue("unimplemented_process", process.name, "Business process has no fact")
+        for name in process.source_datasets:
+            if name not in sources:
+                issue(
+                    "unknown_source",
+                    process.name,
+                    f"Unknown source {name}",
+                    sorted(sources),
+                    name,
                 )
-            if measure.name not in outputs[fact.name]:
-                issues.append(f"Fact {fact.name} omits measure output {measure.name}")
-            for index, ref in enumerate(measure.inputs):
-                check_source(ref, f"{fact.name}.measures.{measure.name}.inputs[{index}]", fact.source_datasets)
-        for link_index, link in enumerate(fact.dimension_links):
-            location = f"{fact.name}.dimension_links[{link_index}]"
-            if link.fact_output_field not in outputs[fact.name]:
-                issues.append(f"{location} omits fact output {link.fact_output_field}")
-            dimension = dimensions.get(link.dimension_model)
-            if dimension is None:
-                issues.append(f"{location} names unknown dimension {link.dimension_model}")
-            elif link.dimension_key_field not in outputs[dimension.name]:
-                issues.append(
-                    f"{location} names missing dimension output "
-                    f"{dimension.name}.{link.dimension_key_field}"
-                )
-            for path_index, path in enumerate(link.source_paths):
-                path_location = f"{location}.source_paths[{path_index}]"
-                if path.source_dataset not in fact.source_datasets:
-                    issues.append(f"{path_location} starts at undeclared fact source {path.source_dataset}")
-                seen_containers = {("source", path.source_dataset)}
-                for step_index, step in enumerate(path.steps):
-                    step_location = f"{path_location}.steps[{step_index}]"
-                    if (step.left.kind, step.left.container) not in seen_containers:
-                        issues.append(f"{step_location} is disconnected from the source path")
-                    for endpoint in (step.left, step.right):
-                        if endpoint.kind == "source":
-                            check_source(
-                                SourceFieldRef(dataset=endpoint.container, column=endpoint.column),
-                                step_location,
-                                fact.source_datasets + (dimension.source_datasets if dimension else []),
-                            )
-                        elif endpoint.container not in outputs:
-                            issues.append(f"{step_location} names unknown model {endpoint.container}")
-                        elif endpoint.column not in outputs[endpoint.container]:
-                            issues.append(
-                                f"{step_location} names missing planned output "
-                                f"{endpoint.container}.{endpoint.column}"
-                            )
-                    seen_containers.add((step.right.kind, step.right.container))
-                if path.steps[-1].right.kind != "model" or path.steps[-1].right.container != link.dimension_model:
-                    issues.append(f"{path_location} must end at {link.dimension_model}")
-            if link.unmatched_policy == "other" and not link.unmatched_explanation:
-                issues.append(f"{location} needs an unmatched explanation")
-        for field in fact.grain_key_fields:
-            if field not in outputs[fact.name]:
-                issues.append(f"Fact {fact.name} grain key {field} is not a planned output")
-    linked_dimensions = {
-        link.dimension_model for fact in target.facts for link in fact.dimension_links
-    }
-    for dimension in target.dimensions:
-        if dimension.name not in linked_dimensions:
-            issues.append(f"Dimension {dimension.name} is not linked to a fact")
-        for field in [*dimension.natural_key_fields, *dimension.grain_key_fields]:
-            if field not in outputs[dimension.name]:
-                issues.append(f"Dimension {dimension.name} key {field} is not a planned output")
-        if dimension.surrogate_key and dimension.surrogate_key not in outputs[dimension.name]:
-            issues.append(
-                f"Dimension {dimension.name} surrogate key "
-                f"{dimension.surrogate_key} is not a planned output"
-            )
     for model in models:
-        field_names = [field.name for field in model.output_fields]
-        if len(field_names) != len(set(field_names)):
-            issues.append(f"Model {model.name} declares duplicate output fields")
-        for field_index, field in enumerate(model.output_fields):
-            for input_index, ref in enumerate(field.inputs):
-                check_source(
+        if len(outputs[model.name]) != len(model.output_fields):
+            issue("duplicate_output", model.name, "Each output must be declared once")
+        for name in model.source_datasets:
+            if name not in sources:
+                issue(
+                    "unknown_source",
+                    model.name,
+                    f"Unknown source {name}",
+                    sorted(sources),
+                    name,
+                )
+        for field in model.output_fields:
+            node = (model.name, field.name)
+            field_graph[node] = set()
+            for index, ref in enumerate(field_inputs(field)):
+                reference(
                     ref,
-                    f"{model.name}.output_fields[{field_index}].inputs[{input_index}]",
+                    f"{model.name}.output_fields.{field.name}.definition.inputs[{index}]",
                     model.source_datasets,
                 )
-        unknown = set(model.source_datasets) - set(source_columns)
-        if unknown:
-            issues.append(
-                f"{model.name} names unknown source datasets: {', '.join(sorted(unknown))}"
+                if ref.kind == "model":
+                    field_graph[node].add((ref.model, ref.column))
+                    if ref.model != model.name:
+                        model_graph[model.name].add(ref.model)
+        for key in model.grain_key_fields:
+            output(model.name, key, f"{model.name}.grain_key_fields")
+    for dimension in target.dimensions:
+        for key in dimension.natural_key_fields + (
+            [dimension.surrogate_key] if dimension.surrogate_key else []
+        ):
+            output(dimension.name, key, f"{dimension.name}.identity")
+    for fact in target.facts:
+        if fact.business_process not in processes:
+            issue(
+                "unknown_process",
+                fact.name,
+                f"Unknown process {fact.business_process}",
+                sorted(processes),
+                fact.business_process,
             )
-    for process in target.business_processes:
-        unknown = set(process.source_datasets) - set(source_columns)
-        if unknown:
-            issues.append(
-                f"{process.name} names unknown source datasets: {', '.join(sorted(unknown))}"
-            )
+        for index, link in enumerate(fact.dimension_links):
+            path = f"{fact.name}.dimension_links[{index}]"
+            dimension = dimensions.get(link.dimension_model)
+            if dimension is None:
+                issue(
+                    "unknown_dimension",
+                    path,
+                    f"Unknown dimension {link.dimension_model}",
+                    sorted(dimensions),
+                    link.dimension_model,
+                )
+            model_graph[fact.name].add(link.dimension_model)
+            for pair in link.key_pairs:
+                output(fact.name, pair.fact_field, path)
+                output(link.dimension_model, pair.dimension_field, path)
+            if link.unmatched_policy == "other" and not link.unmatched_explanation:
+                issue(
+                    "missing_policy_explanation",
+                    path,
+                    "Other unmatched policy needs an explanation",
+                )
+            for pi, match_path in enumerate(link.source_paths):
+                pp = f"{path}.source_paths[{pi}]"
+                if match_path.source_dataset not in fact.source_datasets:
+                    issue(
+                        "undeclared_source",
+                        pp,
+                        "Path must start at a declared fact source",
+                        fact.source_datasets,
+                        match_path.source_dataset,
+                    )
+                seen = {("source", match_path.source_dataset)}
+                destinations = set()
+                for si, step in enumerate(match_path.steps):
+                    sp = f"{pp}.steps[{si}]"
+                    destinations = {ref_container(pair.right) for pair in step.pairs}
+                    if len(destinations) != 1:
+                        issue(
+                            "multiple_destinations",
+                            sp,
+                            "A match step must have one destination container",
+                        )
+                    for pair in step.pairs:
+                        if ref_container(pair.left) not in seen:
+                            issue(
+                                "disconnected_path",
+                                sp,
+                                "Left endpoint must be in the source or an already reached container",
+                            )
+                        for ref in (pair.left, pair.right):
+                            reference(
+                                ref,
+                                sp,
+                                fact.source_datasets
+                                + (dimension.source_datasets if dimension else []),
+                            )
+                            if ref.kind == "model" and ref.model != fact.name:
+                                model_graph[fact.name].add(ref.model)
+                    seen.update(destinations)
+                if destinations != {("model", link.dimension_model)}:
+                    issue(
+                        "wrong_path_destination",
+                        pp,
+                        f"Path must end at {link.dimension_model}",
+                    )
+
+    def cycles(graph, code):
+        visiting, visited = set(), set()
+
+        def visit(node, trail):
+            if node in visiting:
+                issue(code, "target_model", f"Dependency cycle: {trail + [node]}")
+                return
+            if node in visited or node not in graph:
+                return
+            visiting.add(node)
+            for dependency in graph[node]:
+                visit(dependency, trail + [node])
+            visiting.remove(node)
+            visited.add(node)
+
+        for node in graph:
+            visit(node, [])
+
+    cycles(field_graph, "field_dependency_cycle")
+    cycles(model_graph, "model_dependency_cycle")
     return issues
 
 
-class DbtFile(BaseModel):
+class DbtFile(Contract):
     path: str = Field(
-        description="Flat filename under models/: a planned dim_*.sql or fact_*.sql model, or schema.yml.",
+        description="Flat planned dim_*.sql/fact_*.sql filename or schema.yml",
         pattern=r"^(?:dim_[a-z][a-z0-9_]*\.sql|fact_[a-z][a-z0-9_]*\.sql|schema\.yml)$",
     )
     content: str
 
 
-class DbtImplementation(BaseModel):
+class DbtImplementation(Contract):
     files: list[DbtFile]
     explanation: str
 
 
-class AnalysisDimension(BaseModel):
+class AnalysisDimension(Contract):
     field: str
     semantic_type: Literal[
-        "temporal",
-        "categorical",
-        "ordinal",
-        "geographic",
-        "identifier",
-        "other",
+        "temporal", "categorical", "ordinal", "geographic", "identifier", "other"
     ]
     description: str
 
 
-class RatioComponents(BaseModel):
+class RatioComponents(Contract):
     numerator_field: str
     denominator_field: str
     scale: float = 1.0
 
 
-class AnalysisMeasure(BaseModel):
+class AnalysisMeasure(Contract):
     field: str
     semantic_type: Literal[
         "count",
@@ -289,95 +481,180 @@ class AnalysisMeasure(BaseModel):
         "other",
     ]
     description: str
-    additivity: Literal[
-        "additive",
-        "semi_additive",
-        "non_additive",
-    ]
+    additivity: Literal["additive", "semi_additive", "non_additive"]
     components: RatioComponents | None = None
 
 
-class SharedQualification(BaseModel):
-    concept_id: str
+class SharedQualification(Contract):
+    concept_id: str = Field(
+        min_length=1,
+        description="Run-local qualification ID referenced by qualified queries",
+    )
     sql: str
     grain: str
     population_definition: str
 
 
-class AnalysisSpec(BaseModel):
-    title: str = Field(description="Title of this analysis")
-    question: str = Field(description="User question that is being answered")
+class QueryDefinition(Contract):
+    kind: Literal["direct", "qualified"]
+    sql: str = Field(
+        min_length=1,
+        description="direct: SELECT over validated main models; qualified: SELECT over __modellm_population only",
+    )
+    qualification_id: str | None = Field(
+        default=None,
+        description="Required for qualified: ID of a SharedQualification in this proposal; direct: null",
+    )
 
-    sql: str | None = Field(default=None, description="Direct final SELECT over validated dbt models")
-    qualification_id: str | None = None
-    variant_sql: str | None = None
-    concept_id: str = Field(min_length=1)
+    @model_validator(mode="after")
+    def qualification_choice(self):
+        if self.kind == "qualified" and not self.qualification_id:
+            raise ValueError("qualified needs a qualification_id")
+        if self.kind == "direct" and self.qualification_id is not None:
+            raise ValueError("direct has no qualification_id")
+        return self
+
+
+class AnalysisSpec(Contract):
+    title: str
+    question: str
+    query: QueryDefinition
+    concept_id: str = Field(
+        min_length=1, description="Groups related views of one analytical concept"
+    )
     variant_id: str | None = None
     population_definition: str = Field(min_length=1)
     observation_rule: str | None = None
     empty_result_policy: Literal["accept", "repair"] = "repair"
-    variant_field: str | None = None
-
-    rationale: str = Field(
-        description="Why this transformation / grain answers the user question."
+    variant_field: str | None = Field(
+        default=None,
+        description="Actual result discriminator when alternate analytical grains share one result",
     )
-
-    grain: str = Field(
-        description="Human-readable declaration of what one result row represents"
-    )
-
+    rationale: str = Field(description="Why these transformations answer the question")
+    grain: str = Field(description="What one result row represents")
     dimensions: list[AnalysisDimension]
     measures: list[AnalysisMeasure]
-
     visualisation_goal: str = Field(
-        description="What the result should communicate, without naming chart mechanics."
+        description="What the result must communicate, without chart mechanics"
     )
 
 
-class AnalysisPlan(BaseModel):
-    analyses: list[AnalysisSpec] = Field(min_length=1, max_length=4)
-    qualifications: list[SharedQualification] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+class AnalysisPlan(Contract):
+    analyses: list[AnalysisSpec] = Field(min_length=1)
+    qualifications: list[SharedQualification] = Field(
+        description="Shared populations used by qualified queries; otherwise an empty list"
+    )
+    warnings: list[str] = Field(
+        description="Analytical assumptions/limitations, or an empty list"
+    )
 
 
-class ResultFilter(BaseModel):
-    field: str
+class ResultFilter(Contract):
+    field: str = Field(description="Exact accepted-result field")
     operator: Literal["eq", "in", "is_null"]
-    values: list[str | int | float | bool] = Field(default_factory=list)
+    values: list[Any] = Field(
+        description="JSON scalar values: eq takes one, in takes one or more, is_null takes an empty list"
+    )
+
+    @model_validator(mode="after")
+    def cardinality(self):
+        if any(type(value) not in (str, int, float, bool) for value in self.values):
+            raise ValueError(
+                "Filter values must be non-null JSON scalars; use is_null for null"
+            )
+        if (
+            self.operator == "eq"
+            and len(self.values) != 1
+            or self.operator == "in"
+            and not self.values
+            or self.operator == "is_null"
+            and self.values
+        ):
+            raise ValueError(
+                "Filter values must match the operator: eq=one, in=nonempty, is_null=none"
+            )
+        return self
 
 
-class EvidenceAggregate(BaseModel):
+class EvidenceAggregate(Contract):
     function: Literal["count_rows", "count_distinct", "sum", "avg", "min", "max"]
-    field: str | None = None
+    field: str | None = Field(
+        default=None,
+        description="No field for count_rows; an exact accepted-result field for every other operation",
+    )
+
+    @model_validator(mode="after")
+    def field_required(self):
+        if (self.function == "count_rows") != (self.field is None):
+            raise ValueError("Only count_rows takes no field")
+        return self
 
 
-class FindingEvidenceRequest(BaseModel):
-    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+class EvidenceSort(Contract):
+    field: str = Field(
+        description="Exact projected/group field or aggregate alias; no SQL suffix"
+    )
+    direction: Literal["asc", "desc"]
+    nulls: Literal["first", "last"] = "last"
+
+
+class EvidenceRequest(Contract):
+    kind: Literal["rows", "summary"]
+    fields: list[str] = Field(
+        default_factory=list,
+        description="rows: exact result columns to project; summary: empty",
+    )
     group_by: list[str] = Field(default_factory=list)
-    aggregates: dict[str, EvidenceAggregate] = Field(min_length=1)
+    aggregates: dict[str, EvidenceAggregate] = Field(
+        default_factory=dict,
+        description="summary: output alias to aggregate operation; rows: empty",
+    )
     filters: list[ResultFilter] = Field(default_factory=list)
-    order_by: str | None = None
+    order_by: list[EvidenceSort] = Field(default_factory=list)
     limit: int = Field(default=20, ge=1, le=100)
 
+    @model_validator(mode="after")
+    def request_shape(self):
+        if self.kind == "rows" and (
+            not self.fields or self.group_by or self.aggregates
+        ):
+            raise ValueError("rows needs fields and no group_by/aggregates")
+        if self.kind == "summary" and (self.fields or not self.aggregates):
+            raise ValueError("summary needs aggregates and no projected fields")
+        return self
 
-class FindingBinding(BaseModel):
-    evidence_id: str
-    row_index: int = Field(default=0, ge=0)
-    column: str
+
+class EvidenceRowRef(Contract):
+    evidence_id: str = Field(
+        description="ID returned by inspect_result for this accepted result"
+    )
+    row_id: str = Field(
+        description="Stable row ID returned with that evidence; never an invented position"
+    )
 
 
-class FindingStatement(BaseModel):
-    template: str = Field(min_length=1)
-    bindings: dict[str, FindingBinding] = Field(default_factory=dict)
+class FindingCell(Contract):
+    row: str = Field(description="Alias in this statement's selected_rows")
+    column: str = Field(description="Exact column of the stored evidence row")
 
 
-class AnalysisFinding(BaseModel):
-    evidence_requests: list[FindingEvidenceRequest] = Field(default_factory=list)
+class FindingStatement(Contract):
+    template: str = Field(
+        min_length=1,
+        description="Outcome text with simple {placeholders}. Bind observed values/dates/labels to evidence; constants from the supplied analytical definition may appear in prose.",
+    )
+    selected_rows: dict[str, EvidenceRowRef]
+    bindings: dict[str, FindingCell]
+
+
+class AnalysisFinding(Contract):
     statements: list[FindingStatement] = Field(min_length=1)
-    warnings: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(
+        description="Explanatory claims, not verified numerical outcomes; empty list if none"
+    )
 
 
-class ResultColumnProfile(BaseModel):
+class ResultColumnProfile(Contract):
     column_name: str
     column_type: str
     min: str | None = None
@@ -392,20 +669,45 @@ class ResultColumnProfile(BaseModel):
     null_percentage: str | float | None = None
 
 
-class AcceptedAnalysisResult(BaseModel):
+class AcceptedAnalysisResult(Contract):
     result_id: str
+    acceptance_id: str = Field(default_factory=lambda: uuid4().hex)
     relation: str
     row_count: int
     columns: dict[str, str]
     profile: list[ResultColumnProfile]
 
 
-class PlotSpec(BaseModel):
-    function: str = Field(
-        description="Plotly Express chart function, such as line, histogram, box, or treemap"
+class PlotSpec(Contract):
+    function: str = Field(description="Supported Plotly Express chart function")
+    columns: dict[str, Any] = Field(
+        description="Plotly argument to exact accepted field name, or a list of exact names for multi-field arguments"
     )
-    columns: dict[str, str | list[str]] = Field(
-        default_factory=dict,
-        description="Plotly Express column arguments, using only DataFrame column names",
+    filters: list[ResultFilter] = Field(
+        description="Accepted-result selections; empty list if none"
     )
-    filters: list[ResultFilter] = Field(default_factory=list)
+    options: dict[str, Any] = Field(
+        description="Supported presentation options from renderer_capabilities, such as orientation=h; never field references or data arrays. Empty object if none."
+    )
+
+    @model_validator(mode="after")
+    def column_mappings(self):
+        for value in self.columns.values():
+            if isinstance(value, str):
+                continue
+            if (
+                not isinstance(value, list)
+                or not value
+                or any(not isinstance(name, str) for name in value)
+            ):
+                raise ValueError(
+                    "A plot column mapping must be one field name or a nonempty list of field names"
+                )
+        if any(
+            not isinstance(value, (str, int, float, bool))
+            for value in self.options.values()
+        ):
+            raise ValueError(
+                "Plot presentation options must be scalar strings, numbers or booleans"
+            )
+        return self

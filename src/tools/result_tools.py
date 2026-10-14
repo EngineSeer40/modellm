@@ -1,229 +1,201 @@
-"""Read-only inspection tools for one accepted analytical result."""
+"""Inspect one accepted result and retain exactly the evidence the agent saw."""
 
+import copy
+import json
+import re
 from pathlib import Path
 from string import Formatter
-import re
+from typing import Callable
+from uuid import uuid4
 
 import duckdb
 from strands import tool
 
 from src.core.contracts import (
-    AnalysisFinding,
-    AnalysisSpec,
-    EvidenceAggregate,
-    FindingEvidenceRequest,
-    ResultFilter,
+    AnalysisFinding, AnalysisSpec, EvidenceRequest,
 )
 
 
+def quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+class EvidenceRegistry:
+    def __init__(self, acceptance_id: str, relation: str, on_register: Callable | None = None):
+        self.acceptance_id = acceptance_id
+        self.relation = relation
+        self.records: dict[str, dict] = {}
+        self.on_register = on_register
+
+    def register(self, request, rows, columns, truncated, boundary_tie):
+        evidence_id = "e_" + uuid4().hex[:12]
+        record = {
+            "id": evidence_id, "acceptance_id": self.acceptance_id,
+            "relation": self.relation, "request": request.model_dump(),
+            "columns": columns, "truncated": truncated,
+            "boundary_tie": boundary_tie,
+            "rows": [{"row_id": "r_" + uuid4().hex[:12], "values": row} for row in rows],
+        }
+        # Persist and return the same JSON representation (dates/decimals included).
+        record = json.loads(json.dumps(record, default=str))
+        self.records[evidence_id] = record
+        if self.on_register:
+            self.on_register(copy.deepcopy(record))
+        return copy.deepcopy(record)
+
+    def row(self, reference):
+        record = self.records.get(reference.evidence_id)
+        if not record or record["acceptance_id"] != self.acceptance_id or record["relation"] != self.relation:
+            raise ValueError(f"Evidence is not registered for this accepted result: {reference.evidence_id}")
+        for row in record["rows"]:
+            if row["row_id"] == reference.row_id:
+                return row["values"]
+        raise ValueError(f"Unknown evidence row: {reference.row_id}")
+
+    def snapshot(self):
+        return copy.deepcopy(list(self.records.values()))
+
+
 class DuckDBResultTools:
-    """
-    Narrow inspection tools for one accepted analytical result.
-
-    General result statistics are supplied through AcceptedAnalysisResult.profile.
-    These tools exist only for information that is not economical or useful to
-    precompute for every result.
-    """
-
-    def __init__(
-        self,
-        database: Path,
-        relation: str,
-        columns: set[str],
-        spec: AnalysisSpec | None = None,
-    ):
+    def __init__(self, database: Path, relation: str, columns: set[str] | dict[str, str],
+                 spec: AnalysisSpec | None = None, registry: EvidenceRegistry | None = None):
         self.database = database
         self.relation = relation
-        self.columns = columns
+        self.columns = set(columns)
+        self.column_types = columns if isinstance(columns, dict) else {}
         self.spec = spec
+        self.registry = registry
+        if registry and registry.relation != relation:
+            raise ValueError("Evidence registry and result relation differ")
 
     def _connect(self):
-        return duckdb.connect(
-            str(self.database),
-            read_only=True,
-            config={"enable_external_access": "false"},
-        )
+        return duckdb.connect(str(self.database), read_only=True, config={"enable_external_access": "false"})
 
-    def _field(self, field: str) -> str:
+    def _field(self, field):
         if field not in self.columns:
-            raise ValueError(
-                f"Unknown result field: {field}. "
-                f"Available fields: {sorted(self.columns)}"
-            )
-
-        return f'"{field.replace(chr(34), chr(34) * 2)}"'
+            raise ValueError(f"Unknown result field: {field}. Available: {sorted(self.columns)}")
+        return quoted(field)
 
     @tool
-    def category_counts(
-        self,
-        field: str,
-        limit: int = 20,
-    ) -> dict:
-        """
-        Return the most common values and counts for one result field.
-
-        Use this when the actual category values matter for visual encoding,
-        such as legends, colours, labels, facets or controls.
-
-        General statistics such as min/max, quartiles, null percentage and
-        approximate cardinality are already provided in the result profile.
-        """
-        quoted = self._field(field)
+    def category_counts(self, field: str, limit: int = 20) -> dict:
+        """Inspect categories for visual encoding in this accepted result only."""
+        column = self._field(field)
         limit = min(max(limit, 1), 100)
-
         with self._connect() as con:
             rows = con.execute(
-                f"""
-                SELECT
-                    {quoted} AS value,
-                    count(*) AS count
-                FROM {self.relation}
-                GROUP BY {quoted}
-                ORDER BY count(*) DESC
-                LIMIT ?
-                """,
-                [limit],
+                f"SELECT {column}, count(*) AS n FROM {self.relation} GROUP BY {column} ORDER BY n DESC LIMIT ?",
+                [limit + 1],
             ).fetchall()
+        return {"field": field, "truncated": len(rows) > limit,
+                "values": [{"value": value, "count": count} for value, count in rows[:limit]]}
 
-            distinct_count = con.execute(
-                f"""
-                SELECT count(DISTINCT {quoted})
-                FROM {self.relation}
-                """
-            ).fetchone()[0]
-
-        return {
-            "field": field,
-            "distinct_count": distinct_count,
-            "returned_values": len(rows),
-            "truncated": distinct_count > len(rows),
-            "values": [
-                {
-                    "value": value,
-                    "count": count,
-                }
-                for value, count in rows
-            ],
-        }
-
-    def aggregate(self, request: FindingEvidenceRequest) -> list[dict]:
-        """Execute a structured aggregate against only this accepted relation."""
-        if not request.aggregates:
-            raise ValueError("Evidence request needs an aggregate")
-        if len(request.group_by) > 4:
-            raise ValueError("Evidence grouping supports at most four fields")
-        group_fields = [self._field(field) for field in request.group_by]
-        if set(request.aggregates) & set(request.group_by):
-            raise ValueError("Evidence aliases cannot replace group fields")
-        select = [f"{quoted} AS {quoted}" for quoted in group_fields]
-        measure_additivity = {
-            measure.field: measure.additivity for measure in self.spec.measures
-        } if self.spec else {}
-        for alias, aggregate in request.aggregates.items():
-            quoted_alias = f'"{alias.replace(chr(34), chr(34) * 2)}"'
-            if aggregate.function == "count_rows":
-                if aggregate.field is not None:
-                    raise ValueError("count_rows cannot name a field")
-                expression = "count(*)"
-            else:
-                if aggregate.field is None:
-                    raise ValueError(f"{aggregate.function} needs a field")
-                field = self._field(aggregate.field)
-                if aggregate.function == "sum":
-                    if measure_additivity.get(aggregate.field) != "additive":
-                        raise ValueError(f"Cannot sum non-additive or undeclared measure {aggregate.field}")
-                    if self.spec and self.spec.variant_field and not any(
-                        item.field == self.spec.variant_field and item.operator in {"eq", "in"}
-                        for item in request.filters
-                    ):
-                        raise ValueError("Summing mixed-grain result requires a variant filter")
-                if aggregate.function == "count_distinct":
-                    expression = f"count(DISTINCT {field})"
+    def inspect(self, request: EvidenceRequest) -> dict:
+        if self.registry is None:
+            raise ValueError("Evidence inspection needs a registry for the accepted result")
+        group_by = request.group_by
+        fields = group_by if request.kind == "summary" else request.fields
+        if len(fields) != len(set(fields)):
+            raise ValueError("Evidence fields must be distinct")
+        select = [self._field(field) for field in fields]
+        output_fields = set(fields)
+        if request.kind == "summary":
+            if output_fields & set(request.aggregates):
+                raise ValueError("Aggregate aliases cannot replace grouping fields")
+            if not self.column_types:
+                with self._connect() as con:
+                    self.column_types = {r[0]: r[1] for r in con.execute(f"DESCRIBE SELECT * FROM {self.relation}").fetchall()}
+            additive = {m.field for m in self.spec.measures if m.additivity == "additive"} if self.spec else set()
+            for alias, aggregate in request.aggregates.items():
+                if not alias:
+                    raise ValueError("Evidence aliases cannot be empty")
+                if aggregate.function == "count_rows":
+                    expression = "count(*)"
                 else:
-                    expression = f"{aggregate.function}({field})"
-            select.append(f"{expression} AS {quoted_alias}")
-        clauses = []
-        parameters: list = []
+                    field = self._field(aggregate.field)
+                    if aggregate.function in {"sum", "avg"}:
+                        if not re.match(r"^(U?(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT)|INT\d*|DECIMAL|DOUBLE|FLOAT|REAL)", self.column_types[aggregate.field], re.I):
+                            raise ValueError(f"{aggregate.function} needs a numeric field: {aggregate.field}")
+                    if aggregate.function == "sum" and aggregate.field not in additive:
+                        raise ValueError(f"Cannot sum non-additive or undeclared measure {aggregate.field}")
+                    expression = (f"count(DISTINCT {field})" if aggregate.function == "count_distinct"
+                                  else f"{aggregate.function}({field})")
+                select.append(f"{expression} AS {quoted(alias)}")
+                output_fields.add(alias)
+            discriminator = self.spec.variant_field if self.spec else None
+            if discriminator and discriminator not in group_by and not any(
+                f.field == discriminator and (
+                    f.operator == "is_null" or f.operator in {"eq", "in"} and len(f.values) == 1
+                ) for f in request.filters
+            ):
+                raise ValueError("A summary over alternate representations must select one representation or group by its discriminator")
+        clauses, parameters = [], []
         for selection in request.filters:
             field = self._field(selection.field)
             if selection.operator == "eq":
-                if len(selection.values) != 1:
-                    raise ValueError("eq filter needs one value")
                 clauses.append(f"{field} = ?")
                 parameters.append(selection.values[0])
             elif selection.operator == "in":
-                if not selection.values:
-                    raise ValueError("in filter needs values")
                 clauses.append(f"{field} IN ({', '.join('?' for _ in selection.values)})")
                 parameters.extend(selection.values)
             else:
-                if selection.values:
-                    raise ValueError("is_null filter takes no values")
                 clauses.append(f"{field} IS NULL")
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        group = " GROUP BY " + ", ".join(group_fields) if group_fields else ""
-        order = ""
-        if request.order_by:
-            if request.order_by not in request.aggregates:
-                raise ValueError("Evidence order_by must name an aggregate alias")
-            order = f' ORDER BY "{request.order_by.replace(chr(34), chr(34) * 2)}" DESC'
-        query = (
-            f"SELECT {', '.join(select)} FROM {self.relation}"
-            f"{where}{group}{order} LIMIT {request.limit}"
-        )
+        order = []
+        for sort in request.order_by:
+            if sort.field not in output_fields:
+                raise ValueError(f"Evidence sort must name an output field: {sort.field}; available: {sorted(output_fields)}")
+            order.append(f"{quoted(sort.field)} {sort.direction.upper()} NULLS {sort.nulls.upper()}")
+        sql = f"SELECT {', '.join(select)} FROM {self.relation}"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        if group_by:
+            sql += " GROUP BY " + ", ".join(self._field(field) for field in group_by)
+        if order:
+            sql += " ORDER BY " + ", ".join(order)
+        sql += f" LIMIT {request.limit + 1}"
         with self._connect() as con:
-            cursor = con.execute(query, parameters)
-            names = [item[0] for item in cursor.description]
-            return [dict(zip(names, row)) for row in cursor.fetchall()]
+            cursor = con.execute(sql, parameters)
+            columns = {item[0]: str(item[1]) for item in cursor.description}
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        truncated = len(rows) > request.limit
+        boundary_tie = bool(truncated and request.order_by and
+                            rows[request.limit - 1][request.order_by[0].field] == rows[request.limit][request.order_by[0].field])
+        return self.registry.register(request, rows[:request.limit], columns, truncated, boundary_tie)
 
     @tool
-    def grouped_summary(
-        self,
-        group_by: list[str],
-        aggregates: dict[str, dict],
-        filters: list[dict] | None = None,
-        order_by: str | None = None,
-        limit: int = 20,
-    ) -> dict:
-        """Summarize only this accepted result with checked fields and filters."""
-        request = FindingEvidenceRequest(
-            id="inspection",
-            group_by=group_by,
-            aggregates={key: EvidenceAggregate.model_validate(value) for key, value in aggregates.items()},
-            filters=[ResultFilter.model_validate(value) for value in (filters or [])],
-            order_by=order_by,
-            limit=limit,
-        )
-        return {"rows": self.aggregate(request)}
+    def inspect_result(self, request: EvidenceRequest) -> dict:
+        """Inspect accepted-result rows or summaries and store evidence for findings.
+
+        Use rows to cite existing values without recalculation. Use summary for
+        supported aggregates. Sort with separate field and asc/desc direction;
+        a sort field is a projected/group field or aggregate alias. The returned
+        evidence ID and row IDs are the only valid references in final findings.
+        A truncated result or boundary tie does not establish a unique winner.
+        """
+        # Strands validates nested inputs, then passes model_dump() dictionaries.
+        return self.inspect(EvidenceRequest.model_validate(request))
 
 
-def render_finding(finding: AnalysisFinding, tools: DuckDBResultTools) -> tuple[str, list[dict]]:
-    """Bind displayed numerical outcomes to recomputed accepted-result evidence."""
-    evidence = {}
-    for request in finding.evidence_requests:
-        if request.id in evidence:
-            raise ValueError(f"Duplicate finding evidence ID: {request.id}")
-        evidence[request.id] = tools.aggregate(request)
-    rendered = []
+def render_finding(finding: AnalysisFinding, registry: EvidenceRegistry) -> tuple[str, list[dict]]:
+    """Resolve stored evidence; never re-execute a final finding's query."""
+    rendered, used = [], set()
     for statement in finding.statements:
         placeholders = set()
-        for literal, field, _, _ in Formatter().parse(statement.template):
-            if re.search(r"\d", literal):
-                raise ValueError("Finding outcome text contains an unbound number")
+        for _, field, format_spec, conversion in Formatter().parse(statement.template):
             if field is not None:
-                if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", field):
-                    raise ValueError("Finding placeholder must be a simple name")
+                if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", field) or format_spec or conversion:
+                    raise ValueError("Finding placeholders must be simple names without formatting or conversions")
                 placeholders.add(field)
         if placeholders != set(statement.bindings):
             raise ValueError("Finding placeholders and evidence bindings differ")
+        rows = {alias: registry.row(ref) for alias, ref in statement.selected_rows.items()}
+        referenced_rows = {binding.row for binding in statement.bindings.values()}
+        if referenced_rows != set(rows):
+            raise ValueError("Selected evidence rows and bound row aliases differ")
         values = {}
         for placeholder, binding in statement.bindings.items():
-            rows = evidence.get(binding.evidence_id)
-            if rows is None or binding.row_index >= len(rows):
-                raise ValueError(f"Finding evidence row is unavailable: {binding.evidence_id}")
-            if binding.column not in rows[binding.row_index]:
-                raise ValueError(f"Finding evidence field is unavailable: {binding.column}")
-            values[placeholder] = rows[binding.row_index][binding.column]
+            if binding.column not in rows[binding.row]:
+                raise ValueError(f"Missing evidence column: {binding.column}")
+            values[placeholder] = rows[binding.row][binding.column]
         rendered.append(statement.template.format_map(values))
-    detail = [{"id": key, "rows": rows} for key, rows in evidence.items()]
-    return "\n\n".join(rendered), detail
+        used.update(ref.evidence_id for ref in statement.selected_rows.values())
+    return "\n\n".join(rendered), [copy.deepcopy(registry.records[key]) for key in registry.records if key in used]

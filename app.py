@@ -82,7 +82,8 @@ if state:
                     label = f"{dimension['name']}|grain: {dimension['grain']}|natural: {', '.join(dimension['natural_key_fields'])}|surrogate: {dimension['surrogate_key']}"
                     lines.append(f'"{dimension["name"]}" [label="{{{label}}}"];')
                 for fact in target["facts"]:
-                    label = f"{fact['name']}|grain: {fact['grain']}|keys: {', '.join(link['fact_output_field'] for link in fact['dimension_links'])}"
+                    keys = [pair["fact_field"] for link in fact["dimension_links"] for pair in link.get("key_pairs", [{"fact_field": link.get("fact_output_field", "")}])]
+                    label = f"{fact['name']}|grain: {fact['grain']}|keys: {', '.join(keys)}"
                     lines.append(f'"{fact["name"]}" [label="{{{label}}}"];')
                     for dimension in target["dimensions"]:
                         if any(link["dimension_model"] == dimension["name"] for link in fact["dimension_links"]):
@@ -118,10 +119,29 @@ if state:
                 for col, (label, value) in zip(cols, metrics.items()):
                     col.metric(label, f"{value:,.2f}" if isinstance(value, float) else f"{value:,}")
             analyses = state["analysis"]["analyses"]
-            for index, analysis in enumerate(analyses):
-                st.subheader(analysis["title"])
-                st.plotly_chart(pio.read_json(run_dir / f"chart_{index}.json"), use_container_width=True)
-                st.write(state["findings"][index]["text"])
+            concepts = list(dict.fromkeys(item["concept_id"] for item in analyses))
+            for concept in concepts:
+                related = [(index, item) for index, item in enumerate(analyses) if item["concept_id"] == concept]
+                st.subheader(related[0][1]["title"])
+                for index, analysis in related:
+                    charts = [chart for chart in state.get("charts", []) if chart["result_index"] == index]
+                    if not charts:  # Historical dashboard artifacts remain readable.
+                        charts = [{"title": analysis["title"], "file": f"chart_{index}.json"}]
+                    for chart in charts:
+                        st.caption(chart["title"])
+                        st.plotly_chart(pio.read_json(run_dir / chart["file"]), use_container_width=True)
+                    finding = state["findings"][index]
+                    st.write(finding["text"])
+                    with st.expander("Supporting evidence"):
+                        for evidence in finding.get("evidence", []):
+                            st.caption(evidence["id"])
+                            st.dataframe([row.get("values", row) for row in evidence["rows"]], use_container_width=True)
+                            if evidence.get("truncated"):
+                                st.caption("Evidence preview is truncated; see its selection and ordering in the trace.")
+                    with st.expander("Methodology and assumptions"):
+                        st.write(finding.get("methodology", {"grain": analysis["grain"], "rationale": analysis["rationale"]}))
+                        for caveat in finding.get("caveats", []):
+                            st.write(caveat)
             st.subheader("Validated data preview")
             names = state.get("model_names", [])
             if names and database.exists():
