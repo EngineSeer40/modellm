@@ -2,6 +2,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Callable
 
 import plotly.graph_objects as go
@@ -57,10 +58,14 @@ def run(
         "events": events,
     }
 
+    save_lock = Lock()
+
     def save():
-        temporary = run_dir / "result.json.tmp"
-        temporary.write_text(json.dumps(state, indent=2, default=str))
-        temporary.replace(run_dir / "result.json")
+        # Concurrent evidence tools share this run's temporary file.
+        with save_lock:
+            temporary = run_dir / "result.json.tmp"
+            temporary.write_text(json.dumps(state, indent=2, default=str))
+            temporary.replace(run_dir / "result.json")
 
     def emit(stage: str, kind: str, message: str, detail=None):
         event = {

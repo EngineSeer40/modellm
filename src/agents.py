@@ -28,14 +28,17 @@ from .analysis import plot_capabilities
 
 T = TypeVar("T", bound=BaseModel)
 DEFAULT_BEDROCK_MODEL_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+PLOTTING_TRIAL_MODEL_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
-def configured_model_id() -> str:
+def configured_model_id(stage: str | None = None) -> str:
+    if stage == "visualisation generation":
+        return PLOTTING_TRIAL_MODEL_ID
     return os.environ.get("MODELLM_BEDROCK_MODEL_ID") or DEFAULT_BEDROCK_MODEL_ID
 
 
 async def _invoke(
-    prompt: str,
+    prompt: str | list[dict],
     schema: type[T],
     stage: str,
     emit: Callable,
@@ -44,15 +47,25 @@ async def _invoke(
 ) -> T:
     from botocore.config import Config
     from strands import Agent
-    from strands.models import BedrockModel
+    from strands.models import BedrockModel, CacheConfig
     from strands.tools.structured_output.structured_output_tool import StructuredOutputTool
 
-    model_id = configured_model_id()
+    model_id = configured_model_id(stage)
     nova_reasoning = "amazon.nova-2-lite" in model_id
+    cache_enabled = stage in {
+        "analytical interpretation", "generating dbt models",
+        "analytical finding", "visualisation generation",
+    } and (
+        "anthropic" in model_id.lower() or "claude" in model_id.lower()
+    )
+    if cache_enabled and isinstance(prompt, list):
+        # dbt keeps stable modelling evidence before changing repair feedback.
+        prompt = [prompt[0], {"cachePoint": {"type": "default"}}, *prompt[1:]]
     model = BedrockModel(
         model_id=model_id,
         temperature=0.1,
         boto_client_config=Config(read_timeout=3600),
+        **({"cache_config": CacheConfig(strategy="auto", tools_ttl=True)} if cache_enabled else {}),
         **({"additional_request_fields": {
             "reasoningConfig": {"type": "enabled", "maxReasoningEffort": "low"},
         }} if nova_reasoning else {}),
@@ -65,6 +78,7 @@ async def _invoke(
         "region": model.client.meta.region_name,
         "read_timeout_seconds": 3600,
         "reasoning_effort": "low" if nova_reasoning else None,
+        "prompt_cache": {"enabled": cache_enabled, "ttl": "5m" if cache_enabled else None},
     })
     if nova_reasoning:
         emit(stage, "reasoning_status", "Extended reasoning enabled (low); Nova redacts its reasoning text",
@@ -120,6 +134,14 @@ async def _invoke(
                 reasoning_seen = False
                 emit(stage, "model_message", "Agent message recorded",
                      {"call_id": call_id, "message": event["message"]})
+                usage = event["message"].get("metadata", {}).get("usage", {})
+                if cache_enabled and usage:
+                    reads = usage.get("cacheReadInputTokens", 0)
+                    writes = usage.get("cacheWriteInputTokens", 0)
+                    emit(stage, "cache_usage", f"Prompt cache: {reads:,} tokens read, {writes:,} written", {
+                        "call_id": call_id, "cache_read_tokens": reads, "cache_write_tokens": writes,
+                        "uncached_input_tokens": usage.get("inputTokens", 0),
+                    })
             if event.get("start_event_loop"):
                 emit(stage, "model_cycle", "Internal model cycle", {"call_id": call_id})
             if "result" in event:
@@ -157,7 +179,7 @@ async def _invoke(
 
 
 def invoke(
-    prompt: str,
+    prompt: str | list[dict],
     schema: type[T],
     stage: str,
     emit: Callable,
@@ -198,16 +220,15 @@ def implement(
     failure: str = "",
     previous: DbtImplementation | None = None,
 ) -> DbtImplementation:
-    prompt = json.dumps(
-        {
-            "plan": plan.model_dump(),
-            "profiles": profiles,
-            "relationships": relationships,
+    prompt = [
+        {"text": json.dumps({
+            "plan": plan.model_dump(), "profiles": profiles, "relationships": relationships,
+        }, default=str)},
+        {"text": json.dumps({
             "previous_failure": failure,
             "previous_implementation": previous.model_dump() if previous else None,
-        },
-        default=str,
-    )
+        }, default=str)},
+    ]
     return invoke(
         prompt, DbtImplementation, "generating dbt models", emit, DIMENSIONAL_MODEL
     )

@@ -21,14 +21,19 @@ def usage_panel(state):
         col.metric(label, f"{value:,}" if value is not None else "Unavailable")
     cost = total["estimated_cost_usd"]
     cols[3].metric("Estimated cost · USD", f"${cost:.4f}" if cost is not None else "Unavailable")
+    if total.get("cache_read_tokens") is not None:
+        st.caption(f"Input includes cache tokens · Uncached: {total['uncached_input_tokens']:,} · "
+                   f"Cache read: {total['cache_read_tokens']:,} · Cache write: {total['cache_write_tokens']:,}")
     if usage["agents"]:
         st.dataframe([
-            {"Agent": row["agent"], "Calls": row["model_calls"],
+            {"Agent": row["agent"], "Model": row["models"], "Calls": row["model_calls"],
              "Input tokens": row["input_tokens"], "Output tokens": row["output_tokens"],
+             "Uncached input": row.get("uncached_input_tokens"),
+             "Cache read": row.get("cache_read_tokens"), "Cache write": row.get("cache_write_tokens"),
              "Total tokens": row["total_tokens"], "Estimated USD": row["estimated_cost_usd"],
              "Usage": row["usage_status"]} for row in usage["agents"]
         ], hide_index=True, width="stretch")
-    st.caption(f"Usage: {total['usage_status']}. Recorded responses include retries; unavailable responses are not counted as zero. Cost is a list-price estimate, not a bill; caching, discounts and unreported usage may differ. {usage['pricing_basis']}.")
+    st.caption(f"Usage: {total['usage_status']}. Recorded responses include retries; unavailable responses are not counted as zero. Cost is a list-price estimate, not a bill; cache misses, discounts and unreported usage affect cost. {usage['pricing_basis']}.")
 
 st.set_page_config(page_title="ModelLM", layout="wide")
 st.title("ModelLM · modelling and BI spike")
@@ -40,7 +45,8 @@ state = st.session_state.get("result")
 with request_tab:
     request = st.text_area("Business request", height=100)
     files = st.file_uploader("Upload 2–6 related CSV, Parquet or JSON datasets", type=["csv", "parquet", "json", "jsonl", "ndjson"], accept_multiple_files=True)
-    st.caption(f"Agent model: `{configured_model_id()}`")
+    st.caption(f"Default agent model: `{configured_model_id()}` · "
+               f"Plotting trial: `{configured_model_id('visualisation generation')}`")
     if st.button("Run workflow", type="primary"):
         if not request.strip():
             st.error("Enter a business request.")

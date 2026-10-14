@@ -644,10 +644,14 @@ class FindingCell(Contract):
 class FindingStatement(Contract):
     template: str = Field(
         min_length=1,
-        description="Outcome text with simple {placeholders}. Bind observed values/dates/labels to evidence; constants from the supplied analytical definition may appear in prose.",
+        description="Outcome text with simple {placeholders}. Bind observed values/dates/labels to evidence; constants from the supplied analytical definition may appear in prose. Evidence must match the claimed population: a subgroup row is not an overall total.",
     )
-    selected_rows: dict[str, EvidenceRowRef]
-    bindings: dict[str, FindingCell]
+    selected_rows: dict[str, EvidenceRowRef] = Field(
+        description="Alias to stored evidence row. Every selected alias must be used by at least one binding in this statement; do not include unused context rows. Bind relevant labels and values for each cited row.",
+    )
+    bindings: dict[str, FindingCell] = Field(
+        description="Exactly one entry per distinct template placeholder, with no extra entries. Each binding names an alias in this statement's selected_rows and an exact evidence column. Use every selected alias.",
+    )
 
 
 class AnalysisFinding(Contract):
