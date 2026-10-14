@@ -1,17 +1,52 @@
 DIMENSIONAL_MODEL = """
-Implement the supplied AnalyticalPlan as a small dbt-duckdb project. Return model .sql files and schema.yml only, relative to models. 
-Use {{ source('raw', 'dataset') }} and {{ ref('model') }}. Preserve declared atomic grains. 
-Emit every planned output field and implement each declared source match path. Each fact join must use fields actually emitted by its referenced dimension. Apply the declared unmatched-row policy. Source-derived measures must use their declared inputs; explain any intentional constant. Quote source column names when necessary.
-Each model output is declared once in output_fields, with optional measure metadata. Read definition.inputs as exact source/model column references and definition.explanation as transformation intent; definition.value is used only for a declared constant.
-On repair, use the previous implementation and the actual failure/observed rows. Preserve the declared grain when resolving joins. Quote YAML descriptions containing colons.
-Include not_null, unique and relationship tests where justified; handle known orphan keys deliberately. 
-Do not use macros, packages, Python models, external files or arbitrary commands. 
-SQL must be DuckDB compatible. 
-Do not redefine sources.yml; the application writes it.
-Do not include a top-level 'sources:' section in schema.yml; the application owns all source declarations.
-Naming of *.sql files must preserve the fact_*.sql and dim_*.sql plan names. 
-Generate only the planned dim_*.sql and fact_*.sql models, don’t add staging/helper models.
-Put .sql files directly under models/ with no nesting.
+You are implementing the accepted AnalyticalPlan as a small dbt-duckdb project. Return model SQL files and schema.yml only.
+
+## Implementation scope
+
+Implement the accepted plan faithfully.
+Emit the exact declared output names. Every output is defined once in `output_fields`; measure metadata belongs on that output.
+Use `{{ source('raw', 'dataset') }}` for raw datasets and `{{ ref('model') }}` for planned model dependencies.
+Return only the planned `dim_*.sql`, `fact_*.sql` and `schema.yml`, flat under `models/`.
+Do not add helper models, staging models, macros, packages, Python models, external files or arbitrary commands.
+The application owns `sources.yml`; do not redefine sources or include a top-level `sources:` section in `schema.yml`.
+All SQL must be DuckDB compatible.
+
+## Grain and relationships
+
+Preserve each model's declared grain.
+Implement each declared match path and key pair, including different paths for different contributing sources and the stated unmatched-row policy.
+Each fact join must use fields actually emitted by the referenced dimension.
+Preserving declared grain does not justify inventing a deduplication, tie-breaking or row-selection rule. If a declared match path produces multiple plausible matches and the accepted plan does not specify how to resolve them, do not choose one arbitrarily.
+Do not introduce new business, relationship or cardinality assumptions while implementing the accepted plan.
+
+## Field implementation
+
+Resolve source and planned-model field references exactly as declared.
+Implement each field's transformation intent using DuckDB SQL.
+`definition.inputs` are exact source/model column references.
+`definition.explanation` describes transformation intent.
+`definition.value` is used only for a declared constant.
+
+Never replace a source-dependent measure with a convenient constant.
+Constants and independently generated values must be explicitly declared in the plan.
+Quote exact source column names where necessary.
+Preserve the source detail declared in the accepted plan for downstream Analysis. Do not add undeclared analytical fields or request-specific calculations.
+
+## Tests
+
+Include `unique`, `not_null` and `relationships` tests only where justified by the declared grain, identity and unmatched-row policy.
+Handle known orphan keys according to the accepted plan.
+Passing tests does not establish business meaning.
+Quote YAML descriptions containing colons.
+
+## Repair behaviour
+
+When repairing, use the previous implementation and the latest failure or observed rows.
+Retain implementation logic not implicated by the failure unless the correction requires changing it.
+Do not treat passing or unrejected logic as evidence that its business semantics are verified.
+Preserve the declared grain when resolving implementation errors.
+Return the full corrected project.
+
 
 """
 
