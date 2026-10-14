@@ -92,7 +92,8 @@ def _conceptual(state, events, *, decisions_as_table=False):
     if any(reason for _, reason in reasons):
         st.markdown("**Modelling decisions**")
         if decisions_as_table:
-            st.table([{"Modelling decision": f"{name}: {reason}"} for name, reason in reasons if reason])
+            st.table([{"Modelling decision": " ".join(f"{name}: {reason}".split())}
+                      for name, reason in reasons if reason], hide_index=True)
         else:
             for name, reason in reasons:
                 if reason:

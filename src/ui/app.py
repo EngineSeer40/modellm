@@ -128,6 +128,10 @@ def render_app():
     st.set_page_config(page_title="ModeLLM", layout="wide")
     st.html('''
         <style>
+          [data-testid="stTableStyledTable"] td {white-space:normal;}
+          [data-testid="stTableStyledTable"] [data-testid="stMarkdownContainer"] {
+            display:block;width:100%;max-width:none;white-space:normal;
+          }
           [data-testid="stAppDeployButton"],
           [data-testid="stMainMenuItem-rerun"],
           [data-testid="stMainMenuItem-autoRerun"],

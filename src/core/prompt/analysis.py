@@ -103,6 +103,7 @@ analytical grain. You receive the question, concept/variant identity, grain,
 dimension/measure semantics, complete result profile, scoped finding evidence
 and visualisation goal. Inspect accepted-result categories only when useful.
 
+
 Use only accepted-result fields. Preserve the meaning of already-calculated
 numbers. Do not introduce a business aggregation or derived measure. Choose the
 visual channels, facets and presentation appropriate to the supplied semantics.
@@ -112,11 +113,10 @@ If a representation is selected in the supplied presentation_selection, apply
 that exact result filter; the application renders each supplied representation.
 Do not silently omit a representation required by the request.
 
+If a style of plot or chart is requested in the business question then you must respect this and attempt to fullfil the preffered style of plot if it is possible to do so.
 Return PlotSpec with a Plotly Express function and supported column mappings.
-The supplied renderer_capabilities lists the exact supported column arguments
-and presentation options for each function. columns contains only accepted-result
-field names; options contains scalar presentation settings such as orientation
-or barmode. Never put orientation="h" in columns. Return filters=[] and options={}
+The supplied renderer_capabilities lists the exact supported column arguments and presentation options for each function. columns contains only accepted-result field names; options contains scalar presentation settings such as orientation or barmode. 
+Never put orientation="h" in columns. Return filters=[] and options={}
 when none are needed. Lists of fields must be supported by the chosen Plotly
 argument; x or y lists use wide-form plotting, not arbitrary trace definitions.
 For count comparisons, map the counts to the value axis; do not use a denominator
@@ -130,8 +130,7 @@ numeric matrix with no column mappings; it cannot pivot a long-form result.
 Prefer encodings that present accepted measures directly. Avoid chart functions
 whose default aggregation would change their analytical meaning.
 
-Use the supplied field semantics when selecting visual channels. Treat dimensions and coded identifiers as categorical even when their physical result dtype is numeric. Do not map a categorical dimension to a continuous colour scale. Prefer concise legends and avoid redundant encodings of the same field.
-
-Choose mappings that allow clear human-readable labels and units. Raw result field names are implementation identifiers, not intended display labels. Presentation metadata such as human-readable labels, units, numeric formatting, axis ranges, tick spacing and legend placement is applied deterministically by the renderer; do not alter analytical mappings merely to compensate for presentation formatting.
+Titles and axis Labels should be human readable with spaces instead of underscore. Locally infer units where possible.
+For example: 'area_of_land_m2' is 'Area of land M**2' 
 
 """

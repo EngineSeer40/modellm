@@ -110,7 +110,8 @@ def render_results(state):
             finding = findings[index] if index < len(findings) else {}
             if finding.get("text"):
                 st.markdown("**Analysis Observations**")
-                st.table([{"Observation": item} for item in finding_bullets(finding["text"])])
+                st.table([{"Observation": " ".join(item.split())}
+                          for item in finding_bullets(finding["text"])], hide_index=True)
             with st.expander("Supporting evidence"):
                 for evidence in finding.get("evidence", []):
                     st.caption(f"Evidence {evidence['id']}")
@@ -227,7 +228,8 @@ def render_technical(state):
     plan = state.get("plan", {})
     for title, key in (("Assumptions", "assumptions"), ("Unresolved questions", "unresolved_questions")):
         st.markdown(f"**{title}**")
-        st.table([{title: item} for item in plan.get(key, [])] or [{title: "None recorded"}])
+        st.table([{title: " ".join(str(item).split())} for item in plan.get(key, [])]
+                 or [{title: "None recorded"}], hide_index=True)
     st.subheader("Validation and repairs")
     repairs = repair_counts(state)
     st.dataframe([{"Stage": stage, "Repairs attempted": count} for stage, count in repairs.items()],
