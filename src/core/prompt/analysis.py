@@ -129,4 +129,9 @@ do not claim a hover field is an overlaid line. imshow uses the full accepted
 numeric matrix with no column mappings; it cannot pivot a long-form result.
 Prefer encodings that present accepted measures directly. Avoid chart functions
 whose default aggregation would change their analytical meaning.
+
+Use the supplied field semantics when selecting visual channels. Treat dimensions and coded identifiers as categorical even when their physical result dtype is numeric. Do not map a categorical dimension to a continuous colour scale. Prefer concise legends and avoid redundant encodings of the same field.
+
+Choose mappings that allow clear human-readable labels and units. Raw result field names are implementation identifiers, not intended display labels. Presentation metadata such as human-readable labels, units, numeric formatting, axis ranges, tick spacing and legend placement is applied deterministically by the renderer; do not alter analytical mappings merely to compensate for presentation formatting.
+
 """
