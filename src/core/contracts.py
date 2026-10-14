@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-CONTRACT_VERSION = 3
+CONTRACT_VERSION = 4
 
 
 class Contract(BaseModel):
@@ -64,9 +64,8 @@ class MatchPair(Contract):
 class MatchStep(Contract):
     pairs: list[MatchPair] = Field(
         min_length=1,
-        description="Pairs jointly define the match; all right endpoints name one destination",
+        description="Equality comparisons applied jointly; all right endpoints name one destination. Normalize values through declared outputs before matching; no implicit transformation or tie-breaking.",
     )
-    matching_rule: str | None = None
 
 
 class SourceMatchPath(Contract):
@@ -81,8 +80,8 @@ class FactDimensionLink(Contract):
         description="References to canonical outputs; supports composite keys",
     )
     source_paths: list[SourceMatchPath] = Field(min_length=1)
-    unmatched_policy: Literal["null", "unknown_member", "exclude", "other"]
-    unmatched_explanation: str | None = None
+    unmatched_policy: Literal["null", "unknown_member", "exclude"]
+    unmatched_explanation: str | None = Field(default=None, description="Intent and consequence of the selected policy, not a replacement policy. unknown_member requires a dimension member actually emitted by dbt.")
 
 
 # ----- CONCEPTUAL -----
@@ -95,7 +94,7 @@ class FieldDefinition(Contract):
     )
     explanation: str | None = Field(
         default=None,
-        description="Transformation intent for derive, purpose for constant, generation rule for generate; dbt writes the SQL",
+        description="Canonical transformation intent, constant purpose or genuine independent generation; dbt writes the SQL. No rules introduced solely by the current analytical request. Name dependencies in inputs, not just prose.",
     )
     value: Any = Field(
         default=None,
@@ -131,27 +130,22 @@ class FieldDefinition(Contract):
         return self
 
 
-class MeasureSemantics(Contract):
-    additivity: Literal["additive", "semi_additive", "non_additive"]
-
-
 class ModelOutput(Contract):
     name: str = Field(
         min_length=1,
         description="Exact output column dbt must emit; declare it only once",
     )
-    description: str = Field(min_length=1, description="Business meaning of the output")
+    description: str = Field(min_length=1, description="Canonical business meaning and relevant units; does not override the definition or introduce request-specific rules")
     definition: FieldDefinition
-    measure: MeasureSemantics | None = Field(
+    additivity: Literal["additive", "semi_additive", "non_additive"] | None = Field(
         default=None,
-        description="Measure metadata when this output is a measure; otherwise null",
+        description="Measure metadata on this output: declared additivity for a measure, null for a non-measure. A numeric type alone does not make a field a measure.",
     )
 
 
 class BusinessProcessPlan(Contract):
     name: str
     description: str
-    source_datasets: list[str]
 
 
 class DimensionPlan(Contract):
@@ -178,7 +172,7 @@ class FactPlan(Contract):
     grain: str
     modelling_rationale: str = Field(
         min_length=1,
-        description="Why this is a reusable business process at this grain",
+        description="Source-supported process or state and why its grain exists independently of rules introduced by the current request. Review context, not proof of reusability.",
     )
     source_datasets: list[str]
     dimension_links: list[FactDimensionLink] = Field(
@@ -193,18 +187,12 @@ class FactPlan(Contract):
     )
 
 
-class DimensionalModelPlan(Contract):
+class AnalyticalPlan(Contract):
     business_processes: list[BusinessProcessPlan]
     dimensions: list[DimensionPlan]
     facts: list[FactPlan]
-
-
-class AnalyticalPlan(Contract):
-    objective: str
-    business_questions: list[str]
-    assumptions: list[str]
-    unresolved_questions: list[str]
-    target_model: DimensionalModelPlan
+    assumptions: list[str] = Field(description="Chosen interpretations, not observed facts or overrides of the request/profile; empty list if none")
+    unresolved_questions: list[str] = Field(description="Limitations not settled by supplied evidence, including unsupported relationships or matching ambiguity; empty list if none")
 
 
 # ----------------------
@@ -223,7 +211,7 @@ def plan_issues(
 ) -> list[ValidationIssue]:
     """Resolve declarations against this run; do not interpret transformation prose."""
     issues: list[ValidationIssue] = []
-    target = plan.target_model
+    target = plan
     models = target.dimensions + target.facts
     sources = {
         name: {col["name"] for col in p["columns"]} for name, p in profiles.items()
@@ -292,7 +280,7 @@ def plan_issues(
             )
 
     if len(outputs) != len(models):
-        issue("duplicate_model", "target_model", "Model names must be distinct")
+        issue("duplicate_model", "models", "Model names must be distinct")
     if len(processes) != len(target.business_processes):
         issue(
             "duplicate_process", "business_processes", "Process names must be distinct"
@@ -302,15 +290,6 @@ def plan_issues(
     for process in target.business_processes:
         if not any(f.business_process == process.name for f in target.facts):
             issue("unimplemented_process", process.name, "Business process has no fact")
-        for name in process.source_datasets:
-            if name not in sources:
-                issue(
-                    "unknown_source",
-                    process.name,
-                    f"Unknown source {name}",
-                    sorted(sources),
-                    name,
-                )
     for model in models:
         if len(outputs[model.name]) != len(model.output_fields):
             issue("duplicate_output", model.name, "Each output must be declared once")
@@ -344,6 +323,25 @@ def plan_issues(
         ):
             output(dimension.name, key, f"{dimension.name}.identity")
     for fact in target.facts:
+        fact_fields = {field.name: field for field in fact.output_fields}
+
+        def local_sources(column, trail=()):
+            """Sources for a local pre-join value; external models need resolution."""
+            if column in trail or column not in fact_fields:
+                return None
+            found = set()
+            for ref in field_inputs(fact_fields[column]):
+                if ref.kind == "source":
+                    found.add(ref.dataset)
+                elif ref.model == fact.name:
+                    upstream = local_sources(ref.column, (*trail, column))
+                    if upstream is None:
+                        return None
+                    found.update(upstream)
+                else:
+                    return None
+            return found
+
         if fact.business_process not in processes:
             issue(
                 "unknown_process",
@@ -367,12 +365,6 @@ def plan_issues(
             for pair in link.key_pairs:
                 output(fact.name, pair.fact_field, path)
                 output(link.dimension_model, pair.dimension_field, path)
-            if link.unmatched_policy == "other" and not link.unmatched_explanation:
-                issue(
-                    "missing_policy_explanation",
-                    path,
-                    "Other unmatched policy needs an explanation",
-                )
             for pi, match_path in enumerate(link.source_paths):
                 pp = f"{path}.source_paths[{pi}]"
                 if match_path.source_dataset not in fact.source_datasets:
@@ -395,11 +387,15 @@ def plan_issues(
                             "A match step must have one destination container",
                         )
                     for pair in step.pairs:
-                        if ref_container(pair.left) not in seen:
+                        local_input = (
+                            pair.left.kind == "model" and pair.left.model == fact.name
+                            and local_sources(pair.left.column) == {match_path.source_dataset}
+                        )
+                        if ref_container(pair.left) not in seen and not local_input:
                             issue(
                                 "disconnected_path",
                                 sp,
-                                "Left endpoint must be in the source or an already reached container",
+                                "Left endpoint must be in the source, an already reached container, or a fact-local output derived from this source before dimension resolution",
                             )
                         for ref in (pair.left, pair.right):
                             reference(
@@ -423,7 +419,7 @@ def plan_issues(
 
         def visit(node, trail):
             if node in visiting:
-                issue(code, "target_model", f"Dependency cycle: {trail + [node]}")
+                issue(code, "models", f"Dependency cycle: {trail + [node]}")
                 return
             if node in visited or node not in graph:
                 return
@@ -450,8 +446,17 @@ class DbtFile(Contract):
 
 
 class DbtImplementation(Contract):
-    files: list[DbtFile]
-    explanation: str
+    files: list[DbtFile] = Field(description="Distinct flat paths: exactly the planned SQL models and one schema.yml; no sources declarations")
+    explanation: str = Field(description="Implementation, limitations and actual repairs of the accepted plan; introduces no new business, relationship or cardinality assumptions")
+
+    @model_validator(mode="after")
+    def complete_files(self):
+        paths = [file.path for file in self.files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("dbt file paths must be distinct")
+        if paths.count("schema.yml") != 1:
+            raise ValueError("dbt implementation requires exactly one schema.yml")
+        return self
 
 
 class AnalysisDimension(Contract):
@@ -463,8 +468,8 @@ class AnalysisDimension(Contract):
 
 
 class RatioComponents(Contract):
-    numerator_field: str
-    denominator_field: str
+    numerator_field: str = Field(min_length=1, description="Exact numeric column projected by this analysis's final SELECT; not an internal expression or conceptual quantity")
+    denominator_field: str = Field(min_length=1, description="Exact numeric denominator column projected by this analysis's final SELECT; select it explicitly if used inside a ratio")
     scale: float = 1.0
 
 
@@ -486,20 +491,20 @@ class AnalysisMeasure(Contract):
 
 
 class SharedQualification(Contract):
-    concept_id: str = Field(
+    qualification_id: str = Field(
         min_length=1,
         description="Run-local qualification ID referenced by qualified queries",
     )
-    sql: str
-    grain: str
-    population_definition: str
+    sql: str = Field(min_length=1, description="SELECT over validated main models; may join them and must project every field required by its qualified views, including segmentation dimensions")
+    grain: str = Field(description="What one row of the base qualifying population represents")
+    population_definition: str = Field(description="Base population interpretation; a view may select a subset and declares its own output population")
 
 
 class QueryDefinition(Contract):
     kind: Literal["direct", "qualified"]
     sql: str = Field(
         min_length=1,
-        description="direct: SELECT over validated main models; qualified: SELECT over __modellm_population only",
+        description="direct: SELECT over validated main models; qualified: SELECT over __modellm_population only, with no joins to main models. Enrich required fields inside SharedQualification.sql.",
     )
     qualification_id: str | None = Field(
         default=None,
@@ -522,20 +527,18 @@ class AnalysisSpec(Contract):
     concept_id: str = Field(
         min_length=1, description="Groups related views of one analytical concept"
     )
-    variant_id: str | None = None
-    population_definition: str = Field(min_length=1)
-    observation_rule: str | None = None
-    empty_result_policy: Literal["accept", "repair"] = "repair"
+    population_definition: str = Field(min_length=1, description="Actual output population, filters and denominator policy for this view; distinguish it from the base qualification when applicable")
+    observation_rule: str | None = Field(description="Actual request-specific observation rule applied in this view; explicitly null only when no additional rule applies")
     variant_field: str | None = Field(
         default=None,
-        description="Actual result discriminator when alternate analytical grains share one result",
+        description="Exact result column distinguishing alternate representations of the same concept within one result; null otherwise. Ordinary grouping categories, dates or months are not selectors merely because their values vary.",
     )
     rationale: str = Field(description="Why these transformations answer the question")
     grain: str = Field(description="What one result row represents")
     dimensions: list[AnalysisDimension]
     measures: list[AnalysisMeasure]
     visualisation_goal: str = Field(
-        description="What the result must communicate, without chart mechanics"
+        description="Comparison, relationship or pattern the result should communicate; no chart types, traces, axes or overlay instructions"
     )
 
 
@@ -650,7 +653,7 @@ class FindingStatement(Contract):
 class AnalysisFinding(Contract):
     statements: list[FindingStatement] = Field(min_length=1)
     caveats: list[str] = Field(
-        description="Explanatory claims, not verified numerical outcomes; empty list if none"
+        description="Limitations and supplied methodology only; no new unbound observed numerical claims, populations or business calculations. Report observed values through bound statements. Empty list if none."
     )
 
 
@@ -679,12 +682,12 @@ class AcceptedAnalysisResult(Contract):
 
 
 class PlotSpec(Contract):
-    function: str = Field(description="Supported Plotly Express chart function")
+    function: str = Field(description="One Plotly Express function supported by the supplied renderer_capabilities")
     columns: dict[str, Any] = Field(
-        description="Plotly argument to exact accepted field name, or a list of exact names for multi-field arguments"
+        description="Supported column argument from renderer_capabilities to an exact accepted field name, or a supported list of exact names; no data arrays or presentation settings"
     )
     filters: list[ResultFilter] = Field(
-        description="Accepted-result selections; empty list if none"
+        description="Exactly the supplied presentation_selection, with no additional population filters; empty list when none is supplied"
     )
     options: dict[str, Any] = Field(
         description="Supported presentation options from renderer_capabilities, such as orientation=h; never field references or data arrays. Empty object if none."

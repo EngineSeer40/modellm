@@ -35,7 +35,7 @@ def analysis_statement(spec: AnalysisSpec, plan: AnalysisPlan, model_names: list
     """Return the exact final SQL to execute, including an optional shared qualification."""
     if spec.query.kind == "direct":
         return validate_analysis_sql(spec.query.sql, model_names)
-    qualifications = {item.concept_id: item for item in plan.qualifications}
+    qualifications = {item.qualification_id: item for item in plan.qualifications}
     if len(qualifications) != len(plan.qualifications):
         raise ValueError("Shared qualification IDs must be distinct")
     qualification = qualifications.get(spec.query.qualification_id)
@@ -55,7 +55,7 @@ def accept_analyses(
     accepted: list[tuple[AnalysisSpec, AcceptedAnalysisResult]] = []
 
     try:
-        ids = [q.concept_id for q in analysis.qualifications]
+        ids = [q.qualification_id for q in analysis.qualifications]
         if len(ids) != len(set(ids)):
             raise ValueError("Shared qualification IDs must be distinct")
         for qualification in analysis.qualifications:
@@ -80,8 +80,6 @@ def accept_analyses(
                     relation = f'analysis."{result_id}"'
                     con.execute(f"CREATE OR REPLACE TABLE {relation} AS {statement}")
                     row_count = con.execute(f"SELECT count(*) FROM {relation}").fetchone()[0]
-                    if row_count == 0 and spec.empty_result_policy == "repair":
-                        raise ValueError("Analysis result is empty")
                     described = con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()
                     columns = {row[0]: row[1] for row in described}
                     profile_frame = con.execute(f"SUMMARIZE SELECT * FROM {relation}").fetchdf()
@@ -144,7 +142,7 @@ def validate_built_models(
 ) -> list[str]:
     """Check run-declared output interfaces and optional declared grain keys."""
     issues: list[str] = []
-    models = plan.target_model.dimensions + plan.target_model.facts
+    models = plan.dimensions + plan.facts
     for model in models:
         actual = set(built_schemas.get(model.name, {}))
         required = {field.name for field in model.output_fields}
@@ -170,7 +168,7 @@ def validate_built_models(
                         sample["model_rows"] = [dict(zip(columns, values)) for values in cursor.fetchall()]
                         samples.append(sample)
                 issues.append(f"{model.name} duplicates declared grain keys {keys}; observed examples: {samples}")
-    for fact in plan.target_model.facts:
+    for fact in plan.facts:
         fact_columns = set(built_schemas.get(fact.name, {}))
         for link in fact.dimension_links:
             dimension_columns = set(built_schemas.get(link.dimension_model, {}))
@@ -311,8 +309,11 @@ def representation_selections(database: Path, spec: AnalysisSpec, result: Accept
     return selections
 
 
-def validate_plot_spec(plot: PlotSpec, result: AcceptedAnalysisResult) -> None:
+def validate_plot_spec(plot: PlotSpec, result: AcceptedAnalysisResult,
+                       selection: list[ResultFilter] | None = None) -> None:
     validate_plot_arguments(plot)
+    if plot.filters != (selection or []):
+        raise ValueError("Plot filters must equal the supplied presentation selection; no additional population filters")
     available = set(result.columns)
     for argument, value in plot.columns.items():
         names = value if isinstance(value, list) else [value]

@@ -6,7 +6,29 @@ import streamlit as st
 from src.agents import configured_model_id
 from src.data import preview
 from src.storage import DUCKDB_FILENAME
+from src.usage import summarize_usage
 from src.workflow import run
+
+
+def usage_panel(state):
+    usage = state.get("usage") or summarize_usage(state.get("events", []))
+    total = usage["total"]
+    st.subheader("Agent usage")
+    cols = st.columns(4)
+    for col, label, key in zip(cols[:3], ("Input tokens", "Output tokens", "Total tokens"),
+                               ("input_tokens", "output_tokens", "total_tokens")):
+        value = total[key]
+        col.metric(label, f"{value:,}" if value is not None else "Unavailable")
+    cost = total["estimated_cost_usd"]
+    cols[3].metric("Estimated cost · USD", f"${cost:.4f}" if cost is not None else "Unavailable")
+    if usage["agents"]:
+        st.dataframe([
+            {"Agent": row["agent"], "Calls": row["model_calls"],
+             "Input tokens": row["input_tokens"], "Output tokens": row["output_tokens"],
+             "Total tokens": row["total_tokens"], "Estimated USD": row["estimated_cost_usd"],
+             "Usage": row["usage_status"]} for row in usage["agents"]
+        ], hide_index=True, width="stretch")
+    st.caption(f"Usage: {total['usage_status']}. Recorded responses include retries; unavailable responses are not counted as zero. Cost is a list-price estimate, not a bill; caching, discounts and unreported usage may differ. {usage['pricing_basis']}.")
 
 st.set_page_config(page_title="ModelLM", layout="wide")
 st.title("ModelLM · modelling and BI spike")
@@ -34,13 +56,25 @@ with request_tab:
                 paths.append(path)
             status = st.status("Workflow running", expanded=True)
             progress = st.empty()
+            with st.expander("Agent reasoning and output", expanded=True):
+                live_output = st.empty()
             steps = []
+            output = {}
 
             def update(event):
+                if event["kind"] in {"reasoning", "reasoning_status", "model_text"}:
+                    key = (event.get("detail", {}).get("call_id"), event["stage"], event["kind"])
+                    output[key] = output.get(key, "") + event["message"]
+                    sections = []
+                    for (_, stage, kind), content in output.items():
+                        label = "Agent output" if kind == "model_text" else "Reasoning"
+                        sections.append(f"### {stage} · {label}\n\n{content}")
+                    live_output.markdown("\n\n".join(sections))
                 if event["kind"] in {"start", "done", "failure", "repair", "result", "model_call", "tool_call", "contract_check"}:
                     message = f"{event['stage']}: {event['message']}"
-                    if event["kind"] == "model_call" and event.get("detail"):
-                        message += f" · usage: {event['detail']}"
+                    usage = event.get("detail", {}).get("accumulated_usage")
+                    if event["kind"] == "model_call" and usage:
+                        message += f" · tokens: {usage.get('inputTokens', 0):,} input / {usage.get('outputTokens', 0):,} output"
                     steps.append(message)
                     progress.markdown("  \n".join(steps[-12:]))
 
@@ -51,6 +85,8 @@ with request_tab:
                 st.error(state.get("error", "Workflow failed"))
 
 if state:
+    with request_tab:
+        usage_panel(state)
     run_dir = Path(state["run_dir"])
     database = run_dir / DUCKDB_FILENAME
     with data_tab:
@@ -76,7 +112,7 @@ if state:
         with model:
             plan = state.get("plan")
             if plan:
-                target = plan["target_model"]
+                target = plan["target_model"] if state.get("contract_version", 1) < 4 else plan
                 lines = ["digraph G { rankdir=LR; node [shape=record];"]
                 for dimension in target["dimensions"]:
                     label = f"{dimension['name']}|grain: {dimension['grain']}|natural: {', '.join(dimension['natural_key_fields'])}|surrogate: {dimension['surrogate_key']}"
@@ -90,17 +126,28 @@ if state:
                             lines.append(f'"{fact["name"]}" -> "{dimension["name"]}";')
                 lines.append("}")
                 st.graphviz_chart("\n".join(lines), use_container_width=True)
-                st.write(plan["objective"])
+                st.write(state.get("request", "Pending"))
                 st.markdown("**Observed:** raw column profiles and key match counts above. **Inferred:** candidate relationships and model structure below. **Assumed:** business semantics stated in the plan.")
                 st.json(state.get("relationships", []))
                 st.write("Assumptions:", plan["assumptions"])
     with trace_tab:
+        reasoning_output = {}
+        for event in state.get("events", []):
+            if event["kind"] in {"reasoning", "reasoning_status", "model_text"}:
+                key = (event.get("detail", {}).get("call_id"), event["stage"], event["kind"])
+                reasoning_output[key] = reasoning_output.get(key, "") + event["message"]
+        if reasoning_output:
+            st.subheader("Agent reasoning and output")
+            for (call_id, stage, kind), content in reasoning_output.items():
+                label = "Agent output" if kind == "model_text" else "Reasoning"
+                with st.expander(f"{stage} · {label} · {call_id}"):
+                    st.text(content)
         plan = state.get("plan", {})
         st.subheader("Interpretation")
-        st.write(plan.get("objective", "Pending"))
+        st.write(state.get("request", "Pending"))
         st.write("Assumptions:", plan.get("assumptions", []))
         st.write("Unresolved:", plan.get("unresolved_questions", []))
-        st.write("Proposed model:", plan.get("target_model", {}))
+        st.write("Proposed model:", plan.get("target_model", {}) if state.get("contract_version", 1) < 4 else {k: plan.get(k, []) for k in ("business_processes", "dimensions", "facts")})
         st.subheader("Execution timeline")
         st.dataframe(state.get("events", []), use_container_width=True)
         st.write("Repair attempts:", state.get("repair_attempts", 0))
@@ -110,6 +157,7 @@ if state:
                 st.code(item["output"])
         st.dataframe(state.get("dbt_results", []), use_container_width=True)
     with dashboard_tab:
+        usage_panel(state)
         if state["status"] != "complete":
             st.info("Complete dbt validation to display the dashboard.")
         else:

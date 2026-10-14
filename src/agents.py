@@ -42,23 +42,64 @@ async def _invoke(
     system_prompt: str,
     tools: list | None = None,
 ) -> T:
+    from botocore.config import Config
     from strands import Agent
     from strands.models import BedrockModel
     from strands.tools.structured_output.structured_output_tool import StructuredOutputTool
 
     model_id = configured_model_id()
-    model = BedrockModel(model_id=model_id, temperature=0.1)
+    nova_reasoning = "amazon.nova-2-lite" in model_id
+    model = BedrockModel(
+        model_id=model_id,
+        temperature=0.1,
+        boto_client_config=Config(read_timeout=3600),
+        **({"additional_request_fields": {
+            "reasoningConfig": {"type": "enabled", "maxReasoningEffort": "low"},
+        }} if nova_reasoning else {}),
+    )
     agent = Agent(model=model, system_prompt=system_prompt, tools=tools or [])
     started = time.monotonic()
     call_id = uuid.uuid4().hex[:12]
-    emit(stage, "model_call", f"Calling {model_id}", {"call_id": call_id, "status": "started"})
+    emit(stage, "model_call", f"Calling {model_id}", {
+        "call_id": call_id, "model_id": model_id, "status": "started",
+        "region": model.client.meta.region_name,
+        "read_timeout_seconds": 3600,
+        "reasoning_effort": "low" if nova_reasoning else None,
+    })
+    if nova_reasoning:
+        emit(stage, "reasoning_status", "Extended reasoning enabled (low); Nova redacts its reasoning text",
+             {"call_id": call_id})
     emit(stage, "contract_schema", "Recorded the output contract delivered to the model",
          {"call_id": call_id, "tool_spec": StructuredOutputTool(schema).tool_spec,
           "system_prompt": system_prompt})
     final = None
     seen_tools = set()
+    streamed = {"reasoning": "", "model_text": ""}
+    last_flush = time.monotonic()
+    reasoning_seen = False
+
+    def flush_stream():
+        nonlocal last_flush
+        for kind, content in streamed.items():
+            if content:
+                emit(stage, kind, content, {"call_id": call_id})
+                streamed[kind] = ""
+        last_flush = time.monotonic()
+
     try:
         async for event in agent.stream_async(prompt, structured_output_model=schema):
+            if event.get("reasoningText"):
+                streamed["reasoning"] += event["reasoningText"]
+                reasoning_seen = True
+            elif event.get("reasoningRedactedContent") is not None:
+                if not reasoning_seen:
+                    emit(stage, "reasoning_status", "Provider returned redacted reasoning",
+                         {"call_id": call_id})
+                reasoning_seen = True
+            if event.get("data"):
+                streamed["model_text"] += event["data"]
+            if time.monotonic() - last_flush >= 0.5:
+                flush_stream()
             if "current_tool_use" in event:
                 current = event["current_tool_use"]
                 if isinstance(current, dict):
@@ -68,6 +109,15 @@ async def _invoke(
                         emit(stage, "tool_call", current.get("name", "structured output"),
                              {"call_id": call_id, "tool_id": tool_id})
             if event.get("message"):
+                flush_stream()
+                # Some providers supply reasoning only in the completed message.
+                for block in event["message"].get("content", []):
+                    reasoning = block.get("reasoningContent")
+                    if reasoning and not reasoning_seen:
+                        content = reasoning.get("reasoningText", {}).get("text")
+                        emit(stage, "reasoning" if content else "reasoning_status",
+                             content or "Provider returned redacted reasoning", {"call_id": call_id})
+                reasoning_seen = False
                 emit(stage, "model_message", "Agent message recorded",
                      {"call_id": call_id, "message": event["message"]})
             if event.get("start_event_loop"):
@@ -75,14 +125,22 @@ async def _invoke(
             if "result" in event:
                 final = event["result"]
     except Exception as exc:
+        flush_stream()
         error = f"{type(exc).__name__}: {exc}"
         category = "transport" if any(word in error.lower() for word in ("timeout", "timed out", "connection", "throttl")) else "invocation"
         emit(stage, "model_failure", error,
-             {"call_id": call_id, "category": category, "elapsed_seconds": time.monotonic() - started,
+             {"call_id": call_id, "model_id": model_id, "category": category, "elapsed_seconds": time.monotonic() - started,
               "status": "failed", "tool_calls": len(seen_tools)})
         raise
+    flush_stream()
     if final is None or final.structured_output is None:
-        raise RuntimeError(f"{stage} returned no structured output")
+        error = f"{stage} returned no structured output"
+        emit(stage, "model_failure", error, {
+            "call_id": call_id, "model_id": model_id,
+            "category": "structured_output", "status": "failed",
+            "elapsed_seconds": time.monotonic() - started, "tool_calls": len(seen_tools),
+        })
+        raise RuntimeError(error)
     usage = {}
     try:
         summary = final.metrics.get_summary()
@@ -93,7 +151,7 @@ async def _invoke(
         stage,
         "model_call",
         f"{model_id} completed in {time.monotonic() - started:.1f}s",
-        {"call_id": call_id, "status": "completed", **usage},
+        {"call_id": call_id, "model_id": model_id, "status": "completed", **usage},
     )
     return final.structured_output
 
@@ -208,7 +266,6 @@ def interpret(
             "title": spec.title,
             "question": spec.question,
             "concept_id": spec.concept_id,
-            "variant_id": spec.variant_id,
             "rationale": spec.rationale,
             "population_definition": spec.population_definition,
             "observation_rule": spec.observation_rule,
@@ -254,7 +311,6 @@ def plot(
             "question": spec.question,
             "finding": finding,
             "concept_id": spec.concept_id,
-            "variant_id": spec.variant_id,
             "variant_field": spec.variant_field,
             "presentation_selection": [item.model_dump() for item in (selection or [])],
             "visualisation_goal": spec.visualisation_goal,

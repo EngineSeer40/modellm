@@ -22,8 +22,10 @@ from .analysis import (
 from .core.contracts import CONTRACT_VERSION, plan_issues
 from .data import load_raw, profile, relationships, schemas
 from .dbt import dbt_results, run_dbt, write_project
+from .experiments import provenance, record_run
 from .storage import DUCKDB_FILENAME, cleanup_run_databases
 from .tools.result_tools import DuckDBResultTools, EvidenceRegistry, render_finding
+from .usage import summarize_usage
 
 
 MAX_CONCEPTUAL_REVISIONS = 1
@@ -50,6 +52,7 @@ def run(
         "run_id": run_id,
         "request": request,
         "run_dir": str(run_dir),
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "storage_cleanup": cleanup,
         "events": events,
     }
@@ -88,12 +91,24 @@ def run(
         emit("generating dbt models", "artifact", f"Saved dbt proposal {number}",
              {"path": str(path)})
 
+    def track():
+        try:
+            record_run(root, state)
+        except Exception as exc:
+            state["experiment_tracker_error"] = f"{type(exc).__name__}: {exc}"
+            events.append({"time": datetime.now(timezone.utc).isoformat(),
+                           "stage": "experiment tracking", "kind": "failure",
+                           "message": state["experiment_tracker_error"]})
+            save()
+
     try:
+        state["experiment"] = provenance(paths)
         emit(
             "loading data",
             "start",
             "Loading original CSV/Parquet/JSON data into DuckDB raw schema",
         )
+        track()
         names = load_raw(database, paths)
         state["raw_names"] = names
         emit("loading data", "done", f"Loaded {len(names)} raw datasets")
@@ -153,11 +168,11 @@ def run(
             "conceptual modelling",
             "contract_check",
             "Source references and planned output links resolve in this run",
-            {"models": [m.name for m in plan.target_model.dimensions + plan.target_model.facts],
+            {"models": [m.name for m in plan.dimensions + plan.facts],
              "sources": names},
         )
         state["plan"] = plan.model_dump()
-        emit("conceptual modelling", "done", plan.objective)
+        emit("conceptual modelling", "done", "Model plan accepted")
 
         emit(
             "generating dbt models",
@@ -165,7 +180,7 @@ def run(
             "Creating dbt sources, dimensions, facts and tests",
         )
         expected_models = {
-            item.name for item in plan.target_model.dimensions + plan.target_model.facts
+            item.name for item in plan.dimensions + plan.facts
         }
         repair_count = 0
         built_schemas = None
@@ -351,7 +366,6 @@ def run(
                     "acceptance_id": accepted_result.acceptance_id,
                     "executed_sql": analysis_statement(spec, analysis, model_names),
                     "concept_id": spec.concept_id,
-                    "variant_id": spec.variant_id,
                 }
             )
             emit(
@@ -455,12 +469,7 @@ def run(
                 title = spec.title if label is None else f"{spec.title} — {label}"
                 plot = agents.plot(spec, accepted_result, state["findings"][index], emit, database, selection=selection)
                 try:
-                    if selection:
-                        # The application enumerates every supplied representation; a plot cannot pick a different one.
-                        if any(f.field == spec.variant_field and f != selection[0] for f in plot.filters):
-                            raise ValueError("Plot changed the requested presentation selection")
-                        plot.filters = selection + [f for f in plot.filters if f.field != spec.variant_field]
-                    validate_plot_spec(plot, accepted_result)
+                    validate_plot_spec(plot, accepted_result, selection)
                     frame = load_result_frame(database, accepted_result)
                     fig = render_plot(frame, plot, title)
                     filename = f"chart_{index}_{variant_index}.json"
@@ -470,9 +479,13 @@ def run(
                 except Exception as exc:
                     state["plot_attempts"].append(
                         {"title": title, "status": "rejected", "plot": plot.model_dump(),
+                         "presentation_selection": [f.model_dump() for f in selection],
                          "error": f"{type(exc).__name__}: {exc}"}
                     )
-                    emit("visualisation generation", "failure", f"Plot failed for {title}: {type(exc).__name__}: {exc}")
+                    emit("visualisation generation", "failure", f"Plot failed for {title}: {type(exc).__name__}: {exc}",
+                         {"relation": accepted_result.relation,
+                          "presentation_selection": [f.model_dump() for f in selection],
+                          "plot": plot.model_dump()})
                     raise
                 state["plot_attempts"].append(
                     {"title": title, "status": "accepted", "plot": plot.model_dump()}
@@ -502,5 +515,7 @@ def run(
         state["status"] = "failed"
         state["error"] = f"{type(exc).__name__}: {exc}"
         emit("dashboard completion", "failure", state["error"])
+    state["usage"] = summarize_usage(events)
     save()
+    track()
     return state
