@@ -1,0 +1,84 @@
+name: Deploy production
+on:
+  pull_request:
+    branches: [master]
+    types: [closed]
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency: {group: modellm-prod-deployment, cancel-in-progress: false}
+env:
+  AWS_REGION: ap-southeast-2
+jobs:
+  build:
+    # Deploy merged changes from this repository's dev branch; closing a PR alone does not deploy.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.head.ref == 'dev' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    environment: release-build
+    permissions: {contents: read}
+    outputs:
+      image: ${{ steps.image.outputs.uri }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v6
+        with: {version: '0.8.22', python-version: '3.13'}
+      - run: uv sync --frozen --extra dev
+      - run: uv lock --check
+      - run: uv run --frozen --extra dev pytest -q
+      - run: uvx --from cfn-lint==1.40.2 cfn-lint infra/service.yaml infra/bootstrap.yaml infra/deployment-roles.yaml
+      - run: docker build --platform linux/amd64 --build-arg GIT_SHA="$(git rev-parse HEAD)" -t modellm:release-smoke .
+      - run: bash infra/smoke.sh modellm:release-smoke
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          role-skip-session-tagging: true
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - id: image
+        env:
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          ECR_URI: ${{ vars.ECR_URI }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_sha=$(git rev-parse HEAD)
+          # A retry of the same commit reuses its immutable image instead of overwriting it.
+          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$release_sha" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+          if [[ -z "$digest" || "$digest" == None ]]; then
+            docker tag modellm:release-smoke "$ECR_URI:$release_sha"
+            docker push "$ECR_URI:$release_sha"
+            digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$release_sha" --query 'imageDetails[0].imageDigest' --output text)
+          fi
+          aws ecr wait image-scan-complete --repository-name "$ECR_REPOSITORY" --image-id imageDigest="$digest"
+          findings=$(aws ecr describe-image-scan-findings --repository-name "$ECR_REPOSITORY" --image-id imageDigest="$digest" --query 'imageScanFindings.findingSeverityCounts' --output json)
+          SCAN_FINDINGS="$findings" python -c 'import json,os; f=json.loads(os.environ["SCAN_FINDINGS"]) or {}; assert not f.get("CRITICAL",0), "Resolve critical image findings before release"'
+          echo "uri=$ECR_URI@$digest" >> "$GITHUB_OUTPUT"
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions: {contents: read}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-skip-session-tagging: true
+          aws-region: ${{ env.AWS_REGION }}
+      - env:
+          IMAGE_URI: ${{ needs.build.outputs.image }}
+          STACK_NAME: ${{ vars.STACK_NAME }}
+          CFN_ROLE_ARN: ${{ vars.CFN_ROLE_ARN }}
+          CFN_PARAMETERS: ${{ vars.CFN_PARAMETERS }}
+        run: python infra/deploy.py

@@ -1,0 +1,16 @@
+name: Test and container smoke
+on: [push, pull_request]
+permissions: {contents: read}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: {version: '0.8.22', python-version: '3.13'}
+      - run: uv sync --frozen --extra dev
+      - run: uv lock --check
+      - run: uv run --frozen --extra dev pytest -q
+      - run: uvx --from cfn-lint==1.40.2 cfn-lint infra/service.yaml infra/bootstrap.yaml infra/deployment-roles.yaml
+      - run: docker build --platform linux/amd64 --build-arg GIT_SHA="$GITHUB_SHA" -t modellm:release-smoke .
+      - run: bash infra/smoke.sh modellm:release-smoke
