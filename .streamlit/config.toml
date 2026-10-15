@@ -1,0 +1,15 @@
+[client]
+toolbarMode = "viewer"
+
+[server]
+headless = true
+address = "0.0.0.0"
+port = 8501
+fileWatcherType = "none"
+enableCORS = true
+enableXsrfProtection = true
+enableStaticServing = false
+websocketPingInterval = 30
+
+[browser]
+gatherUsageStats = false
