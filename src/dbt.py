@@ -8,6 +8,10 @@ import yaml
 
 from .core.contracts import DbtImplementation
 from .data import identifier
+from .config import current_settings
+from .database import connection_options
+from .execution import current_budget
+from .sql_policy import validate_dbt_files
 
 
 def write_project(
@@ -16,6 +20,7 @@ def write_project(
     source_names: list[str],
     implementation: DbtImplementation,
 ) -> None:
+    validate_dbt_files(implementation, source_names)
     models = project / "models"
     models.mkdir(parents=True, exist_ok=True)
     for old in models.iterdir():
@@ -44,6 +49,7 @@ def write_project(
                             "path": str(database.resolve()),
                             "schema": "main",
                             "threads": 1,
+                            "config_options": connection_options(database),
                         }
                     },
                 }
@@ -65,30 +71,13 @@ def write_project(
             sort_keys=False,
         )
     )
-    if not implementation.files or not any(
-        f.path.endswith(".sql") for f in implementation.files
-    ):
-        raise ValueError("dbt implementation must contain SQL models")
-    if not any(f.path.endswith(".yml") for f in implementation.files):
-        raise ValueError("dbt implementation must contain schema.yml with tests")
     for file in implementation.files:
-        path = Path(file.path)
-        if (
-            len(path.parts) != 1
-            or path.suffix not in {".sql", ".yml"}
-            or path.name == "sources.yml"
-        ):
-            raise ValueError(f"Invalid dbt path: {file.path}")
-        if path.suffix == ".yml":
-            document = yaml.safe_load(file.content)
-            if not isinstance(document, dict):
-                raise ValueError("schema.yml must contain a YAML mapping")
-            if "sources" in document:
-                raise ValueError("schema.yml must omit sources:; the application writes all source definitions in sources.yml")
-        (models / path).write_text(file.content)
+        (models / file.path).write_text(file.content)
 
 
 def run_dbt(project: Path, command: str) -> dict:
+    if command not in {"compile", "build", "test"}:
+        raise ValueError("Unsupported dbt command")
     project = project.resolve()
     environment_dbt = Path(sys.executable).parent / "dbt"
     executable = str(environment_dbt) if environment_dbt.exists() else "dbt"
@@ -103,7 +92,14 @@ def run_dbt(project: Path, command: str) -> dict:
         "--no-static-parser",
         "--no-partial-parse",
     ]
-    env = dict(os.environ, DBT_SEND_ANONYMOUS_USAGE_STATS="false")
+    # Generated dbt code receives neither task-role credential endpoints nor preview/telemetry secrets.
+    home = project / "home"
+    home.mkdir(exist_ok=True, mode=0o700)
+    env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "SYSTEMROOT") if key in os.environ}
+    env.update(HOME=str(home), TMPDIR=str(home), DBT_SEND_ANONYMOUS_USAGE_STATS="false")
+    budget = current_budget()
+    remaining = budget.remaining_seconds() if budget else None
+    timeout = min(current_settings().dbt_seconds, remaining) if remaining else current_settings().dbt_seconds
     try:
         result = subprocess.run(
             args,
@@ -112,7 +108,7 @@ def run_dbt(project: Path, command: str) -> dict:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=180,
+            timeout=timeout,
         )
         return {
             "command": command,

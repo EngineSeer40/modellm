@@ -2,15 +2,17 @@
 
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
+import hmac
+import secrets
+import time
 from pathlib import Path
-from queue import Empty, Queue
 
 import streamlit as st
 
-from src.workflow import run
+from src.config import ReleaseSettings
+from src.execution import RunManager
 
-from .live import render_stream, render_timeline, snapshot_path
+from .live import render_stream, render_timeline
 from .views import (
     render_data_model, render_outcome, render_results, render_technical, render_usage,
 )
@@ -19,23 +21,45 @@ from .views import (
 SURFACES = ("Run", "Results", "Data Model", "Technical Details")
 
 
+@st.cache_resource
+def run_manager():
+    return RunManager(ReleaseSettings.from_env())
+
+
+def _live_access(settings):
+    if not settings.live_enabled:
+        st.info("Live runs are currently disabled. You can explore the saved example.")
+        return False
+    if not settings.prod:
+        return True
+    if st.session_state.get("_preview_access"):
+        return True
+    expected = os.environ.get("MODELLM_LIVE_ACCESS_CODE", "")
+    if len(expected) < 8:
+        st.info("Live access is not configured. The saved example is available.")
+        return False
+    with st.form("preview_access"):
+        code = st.text_input("Access code", type="password")
+        submitted = st.form_submit_button("Unlock live runs")
+    if submitted and time.time() >= st.session_state.get("_access_retry_at", 0):
+        if hmac.compare_digest(code.encode(), expected.encode()):
+            st.session_state["_preview_access"] = True
+            st.rerun()
+        else:
+            st.session_state["_access_retry_at"] = time.time() + 5
+            st.error("Access code not accepted. Wait a moment before trying again.")
+    return False
+
+
 def _collect_run():
-    """Keep the job and its record independent of a particular UI rerun."""
+    """Poll only this session's known snapshot; supervision never depends on reruns."""
     job = st.session_state.get("_run_job")
     if not job:
         return st.session_state.get("result")
-    while True:
-        try:
-            job["events"].append(job["queue"].get_nowait())
-        except Empty:
-            break
-    path = snapshot_path(job["events"])
-    if path:
-        try:
-            job["current"] = json.loads(path.read_text())
-        except (OSError, ValueError):
-            pass
-    job["current"]["events"] = job["events"]
+    try:
+        job["current"] = json.loads(job["workspace"].result_path.read_text())
+    except (OSError, ValueError):
+        pass
     if job["future"].done():
         try:
             st.session_state["result"] = job["future"].result()
@@ -44,7 +68,6 @@ def _collect_run():
         except Exception as exc:
             st.session_state["ui_run_error"] = f"{type(exc).__name__}: {exc}"
         finally:
-            job["executor"].shutdown(wait=False)
             del st.session_state["_run_job"]
         st.rerun()
     return job["current"]
@@ -53,7 +76,11 @@ def _collect_run():
 def render_run(state):
     current = _collect_run()
     busy = "_run_job" in st.session_state
+    manager = run_manager()
     st.header("Ask a business question")
+    st.caption("Uploads are deleted after a run. Other private artifacts expire within 24 hours and may disappear on a service restart.")
+    if not _live_access(manager.settings):
+        return
     st.write("Upload 2–6 related datasets and describe what you want to understand. "
              "ModeLLM builds and validates a data model before calculating your results.")
     # Keep these widgets mounted in the Run tab on every app rerun. Drafts
@@ -88,23 +115,15 @@ def render_run(state):
         elif not 2 <= len(files) <= 6:
             st.error("Upload between 2 and 6 related datasets.")
         else:
-            input_dir = Path("runs") / "uploads"
-            input_dir.mkdir(parents=True, exist_ok=True)
-            paths = []
-            for file in files:
-                path = input_dir / Path(file.name).name
-                path.write_bytes(file.getvalue())
-                paths.append(path)
-            # The future survives navigation; only the UI reads session state.
-            queue = Queue()
-            events = []
-            executor = ThreadPoolExecutor(max_workers=1)
-            st.session_state.pop("ui_run_error", None)
-            st.session_state["_run_job"] = {
-                "executor": executor, "queue": queue, "events": events,
-                "current": {"events": events, "status": "running", "request": request},
-                "future": executor.submit(run, paths, request, Path("runs"), on_event=queue.put),
-            }
+            try:
+                owner = st.session_state.setdefault("_run_owner", secrets.token_urlsafe(32))
+                uploads = [(file.name, file.getvalue()) for file in files]
+                job = manager.submit(uploads, request, owner)
+                st.session_state.pop("ui_run_error", None)
+                st.session_state["_run_job"] = job
+            except (ValueError, OSError) as exc:
+                st.error(str(exc))
+                return
             st.rerun()
     if st.session_state.get("ui_run_error"):
         st.error("The run could not start. Your request and uploads are retained.")
@@ -148,6 +167,11 @@ def render_app():
     ''')
     st.title("ModeLLM")
     st.caption("Turn related business datasets into a validated data model and an evidence-backed analytical dashboard.")
+    if "result" not in st.session_state and st.button("Explore synthetic example"):
+        sample = Path(__file__).resolve().parents[2] / "samples" / "example.json"
+        st.session_state["result"] = json.loads(sample.read_text())
+        st.session_state["result"]["run_dir"] = str(sample.parent)
+        st.session_state["_next_surface"] = "Results"
     pending = st.session_state.pop("_next_surface", None)
     if pending:
         st.session_state["ui_surface"] = pending

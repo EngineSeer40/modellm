@@ -9,7 +9,8 @@ Use `{{ source('raw', 'dataset') }}` for raw datasets and `{{ ref('model') }}` f
 Return only the planned `dim_*.sql`, `fact_*.sql` and `schema.yml`, flat under `models/`.
 Do not add helper models, staging models, macros, packages, Python models, external files or arbitrary commands.
 The application owns `sources.yml`; do not redefine sources or include a top-level `sources:` section in `schema.yml`.
-All SQL must be DuckDB compatible.
+All SQL must be one read-only DuckDB SELECT/CTE/UNION. Jinja permits only literal source() and ref() calls; no config(), statements, macros or hooks. Schema YAML permits only version, models/columns/descriptions and built-in unique, not_null, relationships tests (no config).
+For planned calendars, range(start, end, interval) and generate_series(start, end, interval), including UNNEST of either, are allowed. Use explicit finite date bounds and a positive whole-day-or-coarser interval. Bounds may come from declared sources; other table functions and external reads are forbidden.
 
 ## Grain and relationships
 

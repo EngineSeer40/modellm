@@ -4,6 +4,7 @@ import csv
 import fcntl
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 from collections import Counter
@@ -40,7 +41,9 @@ def provenance(paths: list[Path]) -> dict:
     for path in files:
         digest.update(path.relative_to(repo).as_posix().encode() + b"\0")
         digest.update(path.read_bytes())
-    record = {"code_fingerprint": digest.hexdigest()}
+    record = {"code_fingerprint": digest.hexdigest(), "app_version": os.environ.get("MODELLM_APP_VERSION", "0.1.0")}
+    if os.environ.get("MODELLM_GIT_SHA"):
+        record["git_commit"] = os.environ["MODELLM_GIT_SHA"]
     try:
         inputs = []
         for path in paths:

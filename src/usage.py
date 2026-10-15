@@ -3,13 +3,27 @@
 from collections import Counter
 
 
-# Standard Bedrock USD/1M tokens; Anthropic list prices effective 2026-05-27.
+# Standard Bedrock USD/1M tokens; existing 4.x rates effective 2026-05-27.
 # https://www-cdn.anthropic.com/files/4zrzovbb/website/3684c2faafb97418665782cea0001f439f74b1d2.pdf
-PRICING_BASIS = "Bedrock standard list prices; Anthropic includes 5-minute cache writes (1.25x input) and reads (0.1x input), effective 2026-05-27; Mistral Sydney; verified 2026-10-14"
+PRICING_BASIS = "Bedrock standard list prices; 5-minute Anthropic cache writes 1.25x input; cache reads 0.1x for Sonnet 4.6/5 and Haiku 4.5, 0.05x for Sonnet 5.5; Sonnet 5/5.5 verified 2026-10-15, other models verified 2026-10-14"
 PRICES = {
     "au.anthropic.claude-sonnet-4-6": (3.30, 16.50),
     "global.anthropic.claude-sonnet-4-6": (3.00, 15.00),
     "au.anthropic.claude-haiku-4-5-20251001-v1:0": (1.10, 5.50),
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0": (1.10, 5.50),
+    # https://platform.claude.com/docs/en/about-claude/pricing
+    # AU/US routing adds the published 10% geographic premium to global rates.
+    "au.anthropic.claude-sonnet-5": (2.20, 11.00),
+    "us.anthropic.claude-sonnet-5": (2.20, 11.00),
+    "global.anthropic.claude-sonnet-5": (2.00, 10.00),
+    "au.anthropic.claude-sonnet-5-5": (2.20, 11.00),
+    "us.anthropic.claude-sonnet-5-5": (2.20, 11.00),
+    "global.anthropic.claude-sonnet-5-5": (2.00, 10.00),
+}
+CACHE_READ_MULTIPLIERS = {
+    "au.anthropic.claude-sonnet-5-5": 0.05,
+    "us.anthropic.claude-sonnet-5-5": 0.05,
+    "global.anthropic.claude-sonnet-5-5": 0.05,
 }
 # Mistral's bare model ID uses regional pricing. Other regions remain unpriced.
 # https://aws.amazon.com/bedrock/pricing/
@@ -21,6 +35,20 @@ AGENTS = {
     "analytical finding": "Finding",
     "visualisation generation": "Plotting",
 }
+
+
+def estimate_usage_cost(model: str, region: str, usage: dict, *, cache_ttl_supported=True) -> float | None:
+    """Shared by reporting and live budgets; unknown rates/usage are never free."""
+    rates = PRICES.get(model) or REGIONAL_PRICES.get((model, region))
+    if not rates or not usage or not {"inputTokens", "outputTokens"} <= usage.keys():
+        return None
+    reads, writes = usage.get("cacheReadInputTokens", 0), usage.get("cacheWriteInputTokens", 0)
+    if (reads or writes) and (model not in PRICES or not cache_ttl_supported or any(
+        item.get("inputTokens", 0) and item.get("ttl") != "5m" for item in usage.get("cacheDetails", [])
+    )):
+        return None
+    return ((usage["inputTokens"] + reads * CACHE_READ_MULTIPLIERS.get(model, 0.1) + writes * 1.25)
+            * rates[0] + usage["outputTokens"] * rates[1]) / 1_000_000
 
 
 def summarize_usage(events: list[dict]) -> dict:
@@ -92,14 +120,12 @@ def summarize_usage(events: list[dict]) -> dict:
         agent["cache_write_tokens"] += writes
         agent["output_tokens"] += outputs
         agent["total_tokens"] += inputs + reads + writes + outputs
-        rates = PRICES.get(call["model"]) or REGIONAL_PRICES.get((call["model"], call["region"]))
-        cache_priced = call["model"] in PRICES and call["cache_ttl_supported"]
-        if not rates or ((reads or writes) and not cache_priced):
+        cost = estimate_usage_cost(call["model"], call["region"], usage,
+                                   cache_ttl_supported=call["cache_ttl_supported"])
+        if cost is None:
             agent["estimated_cost_usd"] = None
         elif agent["estimated_cost_usd"] is not None:
-            agent["estimated_cost_usd"] += (
-                (inputs + reads * 0.1 + writes * 1.25) * rates[0] + outputs * rates[1]
-            ) / 1_000_000
+            agent["estimated_cost_usd"] += cost
 
     rows = []
     for agent in agents.values():

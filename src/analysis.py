@@ -5,7 +5,7 @@ import math
 import re
 from pathlib import Path
 
-import duckdb
+from .database import connect
 import pandas as pd
 import plotly.express as px
 import sqlglot
@@ -67,10 +67,7 @@ def accept_analyses(
     except Exception as exc:
         raise AnalysisAcceptanceError(-1, "shared qualifications", exc) from exc
 
-    with duckdb.connect(
-        str(database),
-        config={"enable_external_access": "false"},
-    ) as con:
+    with connect(database) as con:
         con.begin()
         try:
             con.execute("CREATE SCHEMA IF NOT EXISTS analysis")
@@ -154,13 +151,13 @@ def validate_built_models(
         if keys and set(keys) <= actual:
             table = f'main."{identifier(model.name)}"'
             fields = ", ".join('"' + field.replace('"', '""') + '"' for field in keys)
-            with duckdb.connect(str(database), read_only=True) as con:
+            with connect(database, read_only=True) as con:
                 duplicates = con.execute(
                     f"SELECT {fields}, count(*) FROM {table} GROUP BY {fields} HAVING count(*) > 1 LIMIT 5"
                 ).fetchall()
             if duplicates:
                 samples = []
-                with duckdb.connect(str(database), read_only=True) as con:
+                with connect(database, read_only=True) as con:
                     for row in duplicates:
                         sample = dict(zip([*keys, "observed_row_count"], row))
                         predicate = " AND ".join('"' + key.replace('"', '""') + '" IS NOT DISTINCT FROM ?' for key in keys)
@@ -189,7 +186,7 @@ def validate_built_models(
 
 def summarize_models(database: Path, model_names: list[str]) -> dict:
     summaries = {}
-    with duckdb.connect(str(database), read_only=True) as con:
+    with connect(database, read_only=True) as con:
         for name in model_names:
             table = f'main."{identifier(name)}"'
             summaries[name] = {
@@ -286,11 +283,7 @@ def load_result_frame(
     database: Path,
     result: AcceptedAnalysisResult,
 ) -> pd.DataFrame:
-    with duckdb.connect(
-        str(database),
-        read_only=True,
-        config={"enable_external_access": "false"},
-    ) as con:
+    with connect(database, read_only=True) as con:
         return con.execute(f"SELECT * FROM {result.relation}").df()
 
 
@@ -299,7 +292,7 @@ def representation_selections(database: Path, spec: AnalysisSpec, result: Accept
     if not spec.variant_field:
         return [(None, [])]
     field = '"' + spec.variant_field.replace('"', '""') + '"'
-    with duckdb.connect(str(database), read_only=True) as con:
+    with connect(database, read_only=True) as con:
         values = con.execute(f"SELECT DISTINCT {field} FROM {result.relation} ORDER BY {field}").fetchall()
     selections = []
     for (value,) in values:

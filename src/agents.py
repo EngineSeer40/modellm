@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import time
 import uuid
 from collections.abc import Callable
@@ -30,20 +29,32 @@ from .core.contracts import (
     registered_plot_templates,
 )
 from .analysis import plot_capabilities
+from .config import current_settings
+from .execution import current_budget
 from .context_cost import (
     COST_EXPERIMENT_STAGES, configured_cost_experiments,
     split_stable_and_repair_context, tool_result_offload_plugins,
 )
 
 T = TypeVar("T", bound=BaseModel)
-DEFAULT_BEDROCK_MODEL_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
-PLOTTING_TRIAL_MODEL_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 def configured_model_id(stage: str | None = None) -> str:
-    if stage == "visualisation generation":
-        return PLOTTING_TRIAL_MODEL_ID
-    return os.environ.get("MODELLM_BEDROCK_MODEL_ID") or DEFAULT_BEDROCK_MODEL_ID
+    settings = current_settings()
+    return settings.plotting_model_id if stage == "visualisation generation" else settings.model_id
+
+
+def automatic_tool_choice_model(model_class):
+    """Adapt the public SDK stream API for models rejecting forced tool choice.
+
+    Preserve SDK structured-output retries/validators and all message/cache blocks.
+    Only the transport's tool choice changes, including the SDK's end-turn fallback.
+    """
+    class AutomaticToolChoiceModel(model_class):
+        async def stream(self, *args, tool_choice=None, **kwargs):
+            async for event in super().stream(*args, tool_choice={"auto": {}}, **kwargs):
+                yield event
+    return AutomaticToolChoiceModel
 
 
 async def _invoke(
@@ -64,6 +75,8 @@ async def _invoke(
 
     experiments = configured_cost_experiments(cost_experiments)
     model_id = configured_model_id(stage)
+    sonnet_55 = "anthropic.claude-sonnet-5-5" in model_id
+    sonnet_5 = model_id.split("anthropic.")[-1] in {"claude-sonnet-5", "claude-sonnet-5-5"}
     nova_reasoning = "amazon.nova-2-lite" in model_id
     cache_enabled = (stage in {
         "analytical interpretation", "generating dbt models",
@@ -74,10 +87,20 @@ async def _invoke(
     if cache_enabled and isinstance(prompt, list):
         # Keep stable modelling evidence before changing repair feedback.
         prompt = [prompt[0], {"cachePoint": {"type": "default"}}, *prompt[1:]]
-    model = BedrockModel(
+    settings = current_settings()
+    budget = current_budget()
+    remaining = budget.remaining_seconds() if budget else None
+    read_seconds = min(settings.read_seconds, max(1, int(remaining))) if remaining else settings.read_seconds
+    model_class = automatic_tool_choice_model(BedrockModel) if sonnet_55 else BedrockModel
+    model = model_class(
         model_id=model_id,
-        temperature=0.1,
-        boto_client_config=Config(read_timeout=3600),
+        # Sonnet 5 and 5.5 reject non-default sampling; retain default adaptive thinking.
+        **({} if sonnet_5 else {"temperature": 0.1}),
+        boto_client_config=Config(read_timeout=read_seconds, connect_timeout=10,
+                                  retries={"total_max_attempts": 1} if settings.prod else None),
+        region_name=settings.region,
+        use_native_token_count=False,
+        **({"max_tokens": settings.max_output_tokens} if settings.max_output_tokens else {}),
         **({"cache_config": CacheConfig(strategy="auto", tools_ttl=True)} if cache_enabled else {}),
         **({"additional_request_fields": {
             "reasoningConfig": {"type": "enabled", "maxReasoningEffort": "low"},
@@ -87,7 +110,8 @@ async def _invoke(
     call_id = uuid.uuid4().hex[:12]
     offload_directory = context_directory / call_id if context_directory else None
     plugins = tool_result_offload_plugins(stage, experiments, offload_directory)
-    agent = Agent(model=model, system_prompt=system_prompt, tools=tools or [],
+    agent = Agent(model=model, system_prompt=system_prompt, tools=tools or [], callback_handler=None,
+                  **({"hooks": [budget.hooks(model_id, settings.region)]} if budget else {}),
                   **({"plugins": plugins} if plugins else {}))
     call_context = {
         "cost_experiments": sorted(name for name in experiments if COST_EXPERIMENT_STAGES[name] == stage),
@@ -97,13 +121,16 @@ async def _invoke(
     emit(stage, "model_call", f"Calling {model_id}", {
         "call_id": call_id, "model_id": model_id, "status": "started",
         "region": model.client.meta.region_name,
-        "read_timeout_seconds": 3600,
-        "reasoning_effort": "low" if nova_reasoning else None,
+        "read_timeout_seconds": read_seconds,
+        "reasoning_effort": "low" if nova_reasoning else "high (provider default)" if sonnet_5 else None,
         "prompt_cache": {"enabled": cache_enabled, "ttl": "5m" if cache_enabled else None},
         **call_context,
     })
     if nova_reasoning:
         emit(stage, "reasoning_status", "Extended reasoning enabled (low); Nova redacts its reasoning text",
+             {"call_id": call_id})
+    if sonnet_5:
+        emit(stage, "reasoning_status", "Sonnet 5/5.5 uses provider-default adaptive thinking; thinking tokens count toward output and cost",
              {"call_id": call_id})
     emit(stage, "contract_schema", "Recorded the output contract delivered to the model",
          {"call_id": call_id, "tool_spec": StructuredOutputTool(schema).tool_spec,

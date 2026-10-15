@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
-import duckdb
+from ..database import connect
 from strands import tool
 
 from src.core.contracts import (
@@ -68,7 +68,7 @@ class DuckDBResultTools:
             raise ValueError("Evidence registry and result relation differ")
 
     def _connect(self):
-        return duckdb.connect(str(self.database), read_only=True, config={"enable_external_access": "false"})
+        return connect(self.database, read_only=True)
 
     def _field(self, field):
         if field not in self.columns:

@@ -17,9 +17,10 @@ COST_EXPERIMENT_STAGES = {
 
 def configured_cost_experiments(experiments: frozenset[str] | None = None) -> frozenset[str]:
     if experiments is None:
-        experiments = frozenset(name.strip() for name in os.environ.get(
-            "MODELLM_COST_EXPERIMENTS", ""
-        ).split(",") if name.strip())
+        # Unset enables every measure; an explicit empty value preserves the A/B baseline.
+        configured = os.environ.get("MODELLM_COST_EXPERIMENTS")
+        experiments = (frozenset(COST_EXPERIMENT_STAGES) if configured is None else
+                       frozenset(name.strip() for name in configured.split(",") if name.strip()))
     unknown = experiments - COST_EXPERIMENT_STAGES.keys()
     if unknown:
         raise ValueError(f"Unknown MODELLM_COST_EXPERIMENTS: {', '.join(sorted(unknown))}")

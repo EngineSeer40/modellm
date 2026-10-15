@@ -71,3 +71,48 @@ def cleanup_run_databases(root: Path, *, now: float | None = None) -> dict:
         total_bytes -= size
 
     return {"removed_databases": removed_count, "bytes_freed": removed_bytes, "retained_bytes": total_bytes}
+
+
+def artifact_bytes(directory: Path) -> int:
+    """Count owned files without following links; atomic writers may rename during a sweep."""
+    total = 0
+    for path in directory.rglob("*"):
+        try:
+            if not path.is_symlink() and path.is_file():
+                total += path.stat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
+def cleanup_run_workspaces(root: Path, *, active: set[str], settings, now=None) -> dict:
+    """Expire whole owned workspaces; legacy/unmarked folders are never deletion targets."""
+    import shutil
+
+    now = time.time() if now is None else now
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    retained, removed, total = [], 0, artifact_bytes(root)
+    for directory in root.iterdir():
+        if directory.is_symlink() or not directory.is_dir():
+            continue
+        size = artifact_bytes(directory)
+        marker = directory / "workspace.json"
+        if marker.is_symlink():
+            continue
+        try:
+            record = json.loads(marker.read_text())
+        except (OSError, ValueError):
+            continue
+        if record.get("format") != "modellm-workspace-v1" or record.get("run_id") != directory.name:
+            continue
+        if directory.name in active:
+            continue
+        modified = (directory / "result.json").stat().st_mtime if (directory / "result.json").is_file() else record["created_at"]
+        retained.append((modified, directory, size))
+    for modified, directory, size in sorted(retained):
+        if now - modified < settings.retention_seconds and total <= settings.workspace_bytes:
+            continue
+        shutil.rmtree(directory)
+        total -= size
+        removed += 1
+    return {"removed_workspaces": removed, "retained_bytes": total}

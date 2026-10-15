@@ -1,7 +1,9 @@
 import re
 from pathlib import Path
 
-import duckdb
+from .config import current_settings, check_limit
+
+from .database import connect
 
 
 def identifier(value: str) -> str:
@@ -23,17 +25,23 @@ def load_raw(database: Path, paths: list[Path]) -> list[str]:
         ".jsonl": "read_json",
         ".ndjson": "read_json",
     }
-    with duckdb.connect(str(database)) as con:
+    with connect(database, ingest=True) as con:
         con.execute("CREATE SCHEMA IF NOT EXISTS raw")
         for name, path in zip(names, paths):
             suffix = path.suffix.lower()
             reader = readers.get(suffix)
             if reader is None:
                 raise ValueError(f"Unsupported file: {path.name}")
+            settings = current_settings()
+            limit = f" LIMIT {settings.max_source_rows + 1}" if settings.max_source_rows else ""
             con.execute(
-                f'CREATE OR REPLACE TABLE raw."{name}" AS SELECT * FROM {reader}(?)',
+                f'CREATE OR REPLACE TABLE raw."{name}" AS SELECT * FROM {reader}(?){limit}',
                 [str(path.resolve())],
             )
+            rows = con.execute(f'SELECT count(*) FROM raw."{name}"').fetchone()[0]
+            columns = len(con.execute(f'DESCRIBE raw."{name}"').fetchall())
+            check_limit(rows, settings.max_source_rows, "Source rows")
+            check_limit(columns, settings.max_source_columns, "Source columns")
             if suffix in {".json", ".jsonl", ".ndjson"}:
                 fields = con.execute(f'DESCRIBE raw."{name}"').fetchall()
                 rows = con.execute(f'SELECT count(*) FROM raw."{name}"').fetchone()[0]
@@ -54,7 +62,7 @@ def load_raw(database: Path, paths: list[Path]) -> list[str]:
 
 def profile(database: Path, names: list[str]) -> dict:
     result = {}
-    with duckdb.connect(str(database), read_only=True) as con:
+    with connect(database, read_only=True) as con:
         for name in names:
             identifier(name)
             table = f'raw."{name}"'
@@ -80,7 +88,7 @@ def profile(database: Path, names: list[str]) -> dict:
 
 def relationships(database: Path, profiles: dict) -> list[dict]:
     found = []
-    with duckdb.connect(str(database), read_only=True) as con:
+    with connect(database, read_only=True) as con:
         for child, cp in profiles.items():
             for column in cp["columns"]:
                 key = column["name"]
@@ -99,7 +107,7 @@ def relationships(database: Path, profiles: dict) -> list[dict]:
 
 def schemas(database: Path, names: list[str], schema: str = "main") -> dict:
     result = {}
-    with duckdb.connect(str(database), read_only=True) as con:
+    with connect(database, read_only=True) as con:
         for name in names:
             identifier(name)
             fields = con.execute(f'DESCRIBE SELECT * FROM "{schema}"."{name}"').fetchall()
@@ -110,5 +118,5 @@ def schemas(database: Path, names: list[str], schema: str = "main") -> dict:
 def preview(database: Path, schema: str, table: str, limit: int = 500):
     identifier(schema)
     identifier(table)
-    with duckdb.connect(str(database), read_only=True) as con:
+    with connect(database, read_only=True) as con:
         return con.execute(f'SELECT * FROM "{schema}"."{table}" LIMIT {min(limit, 500)}').df()

@@ -1,6 +1,6 @@
 import json
-import uuid
 from datetime import datetime, timezone
+from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
 from threading import Lock
@@ -26,7 +26,10 @@ from .context_cost import configured_cost_experiments
 from .data import load_raw, profile, relationships, schemas
 from .dbt import dbt_results, run_dbt, write_project
 from .experiments import provenance, record_run
-from .storage import DUCKDB_FILENAME, cleanup_run_databases
+from .config import ReleaseSettings, current_settings, use_settings, check_limit
+from .execution import current_budget, use_budget
+from .storage import cleanup_run_workspaces
+from .workspace import RunWorkspace, atomic_json, validate_submission
 from .tools.result_tools import DuckDBResultTools, EvidenceRegistry, render_finding
 from .usage import summarize_usage
 
@@ -36,23 +39,38 @@ MAX_DBT_REPAIRS = 2
 MAX_ANALYSIS_REPAIRS = 1
 MAX_FINDING_REPAIRS = 1
 
-def run(
-    paths: list[Path],
-    request: str,
-    root: Path,
-    *,
-    on_event: Callable | None = None,
-) -> dict:
+def run(paths: list[Path], request: str, root: Path, *, on_event: Callable | None = None,
+        workspace: RunWorkspace | None = None, settings: ReleaseSettings | None = None) -> dict:
+    """Adapt existing callers to one workspace/settings owner, ready for a later RunContext."""
+    settings = settings or current_settings()
+    settings = replace(settings, runs_root=str((workspace.root if workspace else root).resolve()))
+    settings.validate()
+    uploads = [(path.name, path.read_bytes()) for path in paths]
+    validate_submission(uploads, request, settings)
+    workspace = workspace or RunWorkspace.create(root)
+    try:
+        if all(path.resolve().parent == workspace.input_dir for path in paths):
+            if any(path.is_symlink() for path in paths):
+                raise ValueError("Workspace inputs must not be symlinks")
+        else:
+            paths = workspace.persist(uploads, settings)
+        with use_settings(settings), use_budget(settings):
+            return _run(paths, request, workspace, on_event=on_event)
+    finally:
+        workspace.remove_inputs()
+
+
+def _run(paths, request, workspace, *, on_event=None):
     # Snapshot once so every stage and repair in an A/B run uses the same controls.
     cost_experiments = configured_cost_experiments()
-    root = root.resolve()
-    cleanup = cleanup_run_databases(root)
-    run_id = f"{datetime.now(timezone.utc):%y%m%d_%H%M}_{uuid.uuid4().hex[:12]}"
-    run_dir = root / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
+    settings = current_settings()
+    root = workspace.root
+    cleanup = cleanup_run_workspaces(root, active={workspace.run_id}, settings=settings)
+    run_id, run_dir = workspace.run_id, workspace.run_dir
     events = []
     state = {
         "status": "running",
+        "release_settings": settings.snapshot(),
         "contract_version": CONTRACT_VERSION,
         "run_id": run_id,
         "request": request,
@@ -69,9 +87,7 @@ def run(
     def save():
         # Concurrent evidence tools share this run's temporary file.
         with save_lock:
-            temporary = run_dir / "result.json.tmp"
-            temporary.write_text(json.dumps(state, indent=2, default=str))
-            temporary.replace(run_dir / "result.json")
+            atomic_json(workspace.result_path, state)
 
     def emit(stage: str, kind: str, message: str, detail=None):
         event = {
@@ -87,8 +103,8 @@ def run(
         if on_event:
             on_event(event)
 
-    database = run_dir / DUCKDB_FILENAME
-    project = run_dir / "dbt"
+    database = workspace.database
+    project = workspace.dbt_dir
 
     def save_dbt_attempt(number, implementation):
         attempts_dir = run_dir / "attempts"
@@ -130,6 +146,7 @@ def run(
             "Profiling columns, uniqueness, nulls and duplicate rows",
         )
         profiles = profile(database, names)
+        check_limit(len(json.dumps(profiles, default=str)), settings.max_profile_chars, "Serialized source profile")
         state["profiles"] = profiles
         emit("profiling data", "done", "Raw data profile complete")
 
@@ -332,6 +349,7 @@ def run(
                 {"titles": [spec.title for spec in proposed.analyses]},
             )
             try:
+                check_limit(len(proposed.analyses), settings.max_analyses, "Analysis count")
                 accepted_results = accept_analyses(database, model_names, proposed)
                 state["analysis_attempts"].append(
                     {"attempt": attempt + 1, "status": "accepted",
@@ -464,6 +482,7 @@ def run(
         state["charts"] = []
         for index, (spec, accepted_result) in enumerate(accepted_results):
             if accepted_result.row_count == 0:
+                check_limit(len(state["charts"]) + 1, settings.max_charts, "Chart count")
                 figure = go.Figure()
                 figure.update_layout(title=spec.title)
                 figure.add_annotation(text="No rows matched the analysis criteria", showarrow=False)
@@ -482,6 +501,7 @@ def run(
                 continue
             for variant_index, (label, selection) in enumerate(representation_selections(database, spec, accepted_result)):
                 title = spec.title if label is None else f"{spec.title} — {label}"
+                check_limit(len(state["charts"]) + 1, settings.max_charts, "Chart count")
                 plot = agents.plot(spec, accepted_result, state["findings"][index], emit, database,
                                    selection=selection, cost_experiments=cost_experiments)
                 try:
@@ -531,6 +551,9 @@ def run(
         state["status"] = "failed"
         state["error"] = f"{type(exc).__name__}: {exc}"
         emit("dashboard completion", "failure", state["error"])
+    budget = current_budget()
+    state["runtime_budget"] = {"internal_model_calls": budget.calls, "reported_estimated_cost_usd": budget.cost,
+                               "usage_unknown": budget.usage_unknown}
     state["usage"] = summarize_usage(events)
     save()
     track()
