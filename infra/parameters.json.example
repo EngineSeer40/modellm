@@ -1,0 +1,15 @@
+{
+  "VpcId": "vpc-REPLACE",
+  "PublicSubnets": "subnet-REPLACE,subnet-REPLACE",
+  "CertificateArn": "arn:aws:acm:ap-southeast-2:ACCOUNT:certificate/REPLACE",
+  "Hostname": "modellm.example.com",
+  "RepositoryArn": "arn:aws:ecr:ap-southeast-2:ACCOUNT:repository/REPLACE",
+  "PreviewSecretArn": "arn:aws:secretsmanager:ap-southeast-2:ACCOUNT:secret:REPLACE",
+  "BedrockResourceArns": "PROFILE_ARN,DESTINATION_MODEL_ARN,OTHER_DESTINATION_MODEL_ARN",
+  "LiveEnabled": "false",
+  "ModelId": "au.anthropic.claude-sonnet-4-6",
+  "PlottingModelId": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "CostExperiments": "conceptual_guidance,conceptual_cache,early_finding_validation,small_analysis_previews,offload_analysis,offload_finding",
+  "Owner": "REPLACE",
+  "BudgetEmail": "owner@example.com"
+}

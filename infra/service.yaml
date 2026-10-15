@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ModeLLM production - one Streamlit/Fargate task, ephemeral runs
+Parameters:
+  VpcId: {Type: AWS::EC2::VPC::Id}
+  PublicSubnets: {Type: 'List<AWS::EC2::Subnet::Id>'}
+  CertificateArn: {Type: String}
+  Hostname: {Type: String}
+  ImageUri: {Type: String, AllowedPattern: '.+\.dkr\.ecr\..+\.amazonaws\.com/.+@sha256:[a-f0-9]{64}'}
+  RepositoryArn: {Type: String}
+  # Retain this existing input key for compatibility; it holds the production live-access-code secret.
+  PreviewSecretArn: {Type: String}
+  SecretKmsKeyArn: {Type: String, Default: ''}
+  ModelId: {Type: String, Default: 'au.anthropic.claude-sonnet-4-6'}
+  PlottingModelId: {Type: String, Default: 'au.anthropic.claude-haiku-4-5-20251001-v1:0'}
+  BedrockResourceArns:
+    Type: CommaDelimitedList
+    Description: Exact inference-profile ARNs AND all destination foundation-model ARNs resolved by the operator
+  LiveEnabled: {Type: String, Default: 'false', AllowedValues: ['true', 'false']}
+  CostExperiments: {Type: String, Default: 'conceptual_guidance,conceptual_cache,early_finding_validation,small_analysis_previews,offload_analysis,offload_finding'}
+  DesiredCount: {Type: Number, Default: 1, AllowedValues: [0, 1]}
+  DailyRuns: {Type: Number, Default: 10, MinValue: 1}
+  RunSeconds: {Type: Number, Default: 1800, MinValue: 1}
+  MaxCostUsd: {Type: Number, Default: 3, MinValue: 0.01}
+  MaxModelCalls: {Type: Number, Default: 60, MinValue: 1}
+  MaxOutputTokens: {Type: Number, Default: 16384, MinValue: 1}
+  WorkspaceBytes: {Type: Number, Default: 2147483648, MinValue: 1}
+  Owner: {Type: String}
+  BudgetEmail: {Type: String, Default: ''}
+  MonthlyBudgetUsd: {Type: Number, Default: 50}
+Conditions:
+  CustomerKey: !Not [!Equals [!Ref SecretKmsKeyArn, '']]
+  BudgetNotification: !Not [!Equals [!Ref BudgetEmail, '']]
+Resources:
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+      Tags: [{Key: Owner, Value: !Ref Owner}]
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      Tags: [{Key: Owner, Value: !Ref Owner}]
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTPS public ingress
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0}
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Streamlit only from ALB; outbound AWS APIs via public IP
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets: !Ref PublicSubnets
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      LoadBalancerAttributes: [{Key: idle_timeout.timeout_seconds, Value: '300'}]
+      Tags: [{Key: Owner, Value: !Ref Owner}]
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Port: 8501
+      Protocol: HTTP
+      HealthCheckPath: /_stcore/health
+      TargetGroupAttributes:
+        - {Key: stickiness.enabled, Value: 'true'}
+        - {Key: stickiness.type, Value: lb_cookie}
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig: {Protocol: HTTPS, Port: '443', StatusCode: HTTP_301}
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{CertificateArn: !Ref CertificateArn}]
+      DefaultActions: [{Type: forward, TargetGroupArn: !Ref TargetGroup}]
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}, Action: 'sts:AssumeRole'}]
+      Policies:
+        - PolicyName: image-logs-access-code
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - {Effect: Allow, Action: 'ecr:GetAuthorizationToken', Resource: '*'}
+              - Effect: Allow
+                Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage']
+                Resource: !Ref RepositoryArn
+              - Effect: Allow
+                Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
+                Resource: !GetAtt Logs.Arn
+              - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref PreviewSecretArn}
+              - !If
+                - CustomerKey
+                - {Effect: Allow, Action: 'kms:Decrypt', Resource: !Ref SecretKmsKeyArn}
+                - !Ref AWS::NoValue
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}, Action: 'sts:AssumeRole'}]
+      Policies:
+        - PolicyName: configured-bedrock-models
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream']
+                Resource: !Ref BedrockResourceArns
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '2048'
+      Memory: '4096'
+      RuntimePlatform: {CpuArchitecture: X86_64, OperatingSystemFamily: LINUX}
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes: [{Name: data}, {Name: tmp}]
+      ContainerDefinitions:
+        - Name: app
+          Image: !Ref ImageUri
+          Essential: true
+          User: '10001:10001'
+          ReadonlyRootFilesystem: true
+          StopTimeout: 120
+          LinuxParameters: {InitProcessEnabled: true}
+          PortMappings: [{ContainerPort: 8501, Protocol: tcp}]
+          MountPoints:
+            - {SourceVolume: data, ContainerPath: /data, ReadOnly: false}
+            - {SourceVolume: tmp, ContainerPath: /tmp, ReadOnly: false}
+          Environment:
+            - {Name: MODELLM_PROD, Value: 'true'}
+            - {Name: MODELLM_LIVE_ENABLED, Value: !Ref LiveEnabled}
+            - {Name: MODELLM_RUNS_ROOT, Value: /data/runs}
+            - {Name: MODELLM_DAILY_RUNS, Value: !Ref DailyRuns}
+            - {Name: MODELLM_RUN_SECONDS, Value: !Ref RunSeconds}
+            - {Name: MODELLM_MAX_COST_USD, Value: !Ref MaxCostUsd}
+            - {Name: MODELLM_MAX_MODEL_CALLS, Value: !Ref MaxModelCalls}
+            - {Name: MODELLM_MAX_OUTPUT_TOKENS, Value: !Ref MaxOutputTokens}
+            - {Name: MODELLM_WORKSPACE_BYTES, Value: !Ref WorkspaceBytes}
+            - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: MODELLM_BEDROCK_MODEL_ID, Value: !Ref ModelId}
+            - {Name: MODELLM_PLOTTING_MODEL_ID, Value: !Ref PlottingModelId}
+            - {Name: MODELLM_COST_EXPERIMENTS, Value: !Ref CostExperiments}
+            - {Name: STREAMLIT_SERVER_MAX_UPLOAD_SIZE, Value: '20'}
+            - {Name: STREAMLIT_BROWSER_SERVER_ADDRESS, Value: !Ref Hostname}
+            - {Name: STREAMLIT_BROWSER_SERVER_PORT, Value: '443'}
+          Secrets: [{Name: MODELLM_LIVE_ACCESS_CODE, ValueFrom: !Ref PreviewSecretArn}]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref Logs
+              awslogs-stream-prefix: app
+      Tags: [{Key: Owner, Value: !Ref Owner}]
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: HttpsListener
+    Properties:
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: '1.4.0'
+      DesiredCount: !Ref DesiredCount
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+        DeploymentCircuitBreaker: {Enable: true, Rollback: true}
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref PublicSubnets
+          SecurityGroups: [!Ref TaskSecurityGroup]
+      LoadBalancers: [{ContainerName: app, ContainerPort: 8501, TargetGroupArn: !Ref TargetGroup}]
+      Tags: [{Key: Owner, Value: !Ref Owner}]
+  Budget:
+    Type: AWS::Budgets::Budget
+    Condition: BudgetNotification
+    Properties:
+      Budget:
+        BudgetName: !Sub '${AWS::StackName}-cost-alert'
+        BudgetLimit: {Amount: !Ref MonthlyBudgetUsd, Unit: USD}
+        BudgetType: COST
+        TimeUnit: MONTHLY
+      NotificationsWithSubscribers:
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref BudgetEmail}]
+Outputs:
+  Url: {Value: !Sub 'https://${Hostname}'}
+  AlbDnsName: {Value: !GetAtt LoadBalancer.DNSName}
+  ClusterName: {Value: !Ref Cluster}
+  ServiceName: {Value: !GetAtt Service.Name}
+  TaskRoleArn: {Value: !GetAtt TaskRole.Arn}

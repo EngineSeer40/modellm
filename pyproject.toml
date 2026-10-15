@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "Agentic dimensional modelling and BI discovery spike"
 requires-python = ">=3.12"
 dependencies = [
-  "duckdb>=1.2", "dbt-duckdb>=1.9", "strands-agents>=1.0",
+  "duckdb>=1.2", "dbt-duckdb>=1.9", "strands-agents>=1.59",
   "pydantic>=2.9", "pandas>=2.2", "pyarrow>=18",
   "plotly>=6", "streamlit>=1.45", "PyYAML>=6",
-  "sqlglot>=30",
+  "sqlglot>=30", "Jinja2>=3.1",
 ]
 
 [project.optional-dependencies]

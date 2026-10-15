@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: One-time operator bootstrap of ModeLLM GitHub deployment credentials and roles
+Parameters:
+  GitHubRepository:
+    Type: String
+    Default: EngineSeer40/modellm
+    AllowedPattern: '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
+  ApplicationStackName:
+    Type: String
+    Default: modellm-prod
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9-]{0,23}'
+    Description: Must equal the production GitHub STACK_NAME; keep short for generated IAM role names
+  RepositoryArn:
+    Type: String
+    AllowedPattern: 'arn:aws:ecr:[a-z0-9-]+:[0-9]{12}:repository/.+'
+    Description: RepositoryArn output from the modellm-images stack
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Same VPC as the application CFN_PARAMETERS
+Resources:
+  # Programmatic access works without an account-level OIDC provider. No console login or keys are created here.
+  CredentialsUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub '${ApplicationStackName}-github'
+      Tags: [{Key: GitHubRepository, Value: !Ref GitHubRepository}]
+  CredentialsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: assume-deployment-roles
+      Users: [!Ref CredentialsUser]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Resource: [!GetAtt BuildRole.Arn, !GetAtt DeployRole.Arn]
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ApplicationStackName}-github-build'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt CredentialsUser.Arn
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: release-image
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - {Effect: Allow, Action: 'ecr:GetAuthorizationToken', Resource: '*'}
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:DescribeImages
+                  - ecr:DescribeImageScanFindings
+                Resource: !Ref RepositoryArn
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ApplicationStackName}-github-deploy'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt CredentialsUser.Arn
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: application-changesets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ApplicationStackName}/*'
+                  - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/awscli-cloudformation-package-deploy-*/*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationRole.Arn
+                Condition:
+                  StringEquals: {iam:PassedToService: cloudformation.amazonaws.com}
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ApplicationStackName}-cloudformation'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - {Effect: Allow, Principal: {Service: cloudformation.amazonaws.com}, Action: 'sts:AssumeRole'}
+      Policies:
+        - PolicyName: application-resources
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # service.yaml lets CloudFormation generate these physical names.
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:UpdateRole
+                  - iam:UpdateRoleDescription
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ApplicationStackName}-ExecutionRole-*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ApplicationStackName}-TaskRole-*'
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ApplicationStackName}-ExecutionRole-*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ApplicationStackName}-TaskRole-*'
+                Condition:
+                  StringEquals: {iam:PassedToService: ecs-tasks.amazonaws.com}
+              - Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS*'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing*'
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName: [ecs.amazonaws.com, elasticloadbalancing.amazonaws.com]
+              - Effect: Allow
+                Action:
+                  - ecs:CreateCluster
+                  - ecs:DeleteCluster
+                  - ecs:CreateService
+                  - ecs:UpdateService
+                  - ecs:DeleteService
+                  - ecs:DeregisterTaskDefinition
+                  - ecs:DeleteTaskDefinitions
+                  - ecs:TagResource
+                  - ecs:UntagResource
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ApplicationStackName}-Cluster-*'
+                  - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ApplicationStackName}-Cluster-*/*'
+                  - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${ApplicationStackName}-TaskDefinition-*:*'
+              - Effect: Allow
+                Action: [ecs:RegisterTaskDefinition, ecs:DescribeClusters, ecs:DescribeServices, ecs:DescribeTaskDefinition, ecs:ListTagsForResource]
+                Resource: '*'
+                Condition:
+                  StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:CreateLoadBalancer
+                  - elasticloadbalancing:DeleteLoadBalancer
+                  - elasticloadbalancing:ModifyLoadBalancerAttributes
+                  - elasticloadbalancing:SetSecurityGroups
+                  - elasticloadbalancing:SetSubnets
+                  - elasticloadbalancing:CreateTargetGroup
+                  - elasticloadbalancing:DeleteTargetGroup
+                  - elasticloadbalancing:ModifyTargetGroup
+                  - elasticloadbalancing:ModifyTargetGroupAttributes
+                  - elasticloadbalancing:RegisterTargets
+                  - elasticloadbalancing:DeregisterTargets
+                  - elasticloadbalancing:CreateListener
+                  - elasticloadbalancing:DeleteListener
+                  - elasticloadbalancing:ModifyListener
+                  - elasticloadbalancing:AddListenerCertificates
+                  - elasticloadbalancing:RemoveListenerCertificates
+                  - elasticloadbalancing:AddTags
+                  - elasticloadbalancing:RemoveTags
+                Resource: !Sub 'arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:*'
+              - Effect: Allow
+                Action: ['elasticloadbalancing:Describe*']
+                Resource: '*'
+                Condition:
+                  StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}
+              # Security-group creation authorizes both the group and its existing VPC.
+              - Effect: Allow
+                Action:
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*'
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${VpcId}'
+                Condition:
+                  StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}
+                  ArnEqualsIfExists:
+                    ec2:Vpc: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${VpcId}'
+              - Effect: Allow
+                Action: [ec2:DescribeVpcs, ec2:DescribeSubnets, ec2:DescribeSecurityGroups, ec2:DescribeNetworkInterfaces, ec2:DescribeAccountAttributes]
+                Resource: '*'
+                Condition:
+                  StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:DeleteLogGroup, logs:PutRetentionPolicy, logs:DeleteRetentionPolicy, logs:TagLogGroup, logs:UntagLogGroup, logs:ListTagsLogGroup, logs:TagResource, logs:UntagResource, logs:ListTagsForResource]
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApplicationStackName}-Logs-*'
+              - Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: '*'
+                Condition:
+                  StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}
+              - Effect: Allow
+                Action: [budgets:ViewBudget, budgets:ModifyBudget]
+                Resource: !Sub 'arn:${AWS::Partition}:budgets::${AWS::AccountId}:budget/${ApplicationStackName}-cost-alert'
+Outputs:
+  CredentialsUserName: {Value: !Ref CredentialsUser}
+  BuildRoleArn: {Value: !GetAtt BuildRole.Arn}
+  DeployRoleArn: {Value: !GetAtt DeployRole.Arn}
+  CloudFormationRoleArn: {Value: !GetAtt CloudFormationRole.Arn}
+  ApplicationStackName: {Value: !Ref ApplicationStackName}
