@@ -18,6 +18,7 @@ from .core.contracts import (
     AnalyticalPlan,
     PlotSpec,
     ResultFilter,
+    validate_plot_template,
 )
 from .data import identifier
 from .tools.analysis_tools import POPULATION_CTE, validate_analysis_sql, validate_variant_sql
@@ -278,6 +279,7 @@ def validate_plot_arguments(plot: PlotSpec) -> None:
     for argument in plot.options:
         if argument not in supported["options"]:
             raise ValueError(f"Unsupported plot presentation option for {plot.function}: {argument}")
+    validate_plot_template(plot.options)
 
 
 def load_result_frame(

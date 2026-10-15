@@ -53,6 +53,21 @@ The Streamlit UI lives under `src/ui/`; `app.py` composes it. Run stacks a large
 
 The analysis agent uses read-only DuckDB tools to inspect validated dbt models. Application code validates its final SQL, materializes each analytical result in DuckDB, checks declared result fields, and profiles the accepted result. The plotting agent receives result semantics and statistics and can inspect only the accepted result through scoped tools. Plotly rendering loads that result into a pandas DataFrame. The spike does not establish business correctness merely because dbt tests passed; review assumptions and data-quality warnings when interpreting a dashboard.
 
+Plotting receives the installed Plotly template registry as `renderer_templates`. Unknown template names are rejected inside the structured-output tool loop so the agent can correct them before rendering; the renderer checks them again. Omit `template` to use Plotly's default.
+
 Analysis, dbt, Finding and Plotting calls enable Strands automatic prompt caching for Anthropic Claude models, using the default five-minute lifetime for prompts, tools and conversation prefixes. Model call events record the configuration; `cache_usage` events report reads and writes. Usage panels and ledgers distinguish uncached input, cache reads and cache writes; input totals include all three. Known Claude prices include five-minute cache writes at 1.25 times the input rate and reads at 0.1 times the input rate. Unsupported cache prices remain unavailable. Cache hits and savings must be measured from provider responses.
 
 Implementation follows Strands' [structured-output](https://strandsagents.com/docs/user-guide/sdk/agents/structured-output/) and [streaming](https://strandsagents.com/docs/user-guide/sdk/streaming/async-iterators/) APIs and dbt's [DuckDB profile](https://docs.getdbt.com/docs/local/connect-data-platform/duckdb-setup) and [source](https://docs.getdbt.com/docs/build/sources) conventions.
+
+Cost experiments are opt-in through `MODELLM_COST_EXPERIMENTS`, a comma-separated list. Unset it (or use an empty value) to retain the baseline behavior. Settings are captured once per run; `result.json` records them and the Strands version, and model-call events record the controls relevant to that stage. Unknown names are rejected before a run starts.
+
+| Control | Effect |
+|---|---|
+| `conceptual_guidance` | Adds explicit source-scope and matching-path instructions. |
+| `conceptual_cache` | Enables Claude caching for Conceptual, separating stable evidence from repair feedback. |
+| `early_finding_validation` | Checks placeholder/binding structure inside Strands' structured-output loop, while keeping final evidence acceptance checks. |
+| `small_analysis_previews` | Defaults Analysis previews to 20 rows; explicit limits up to 500 and complete accepted results remain supported. |
+| `offload_analysis` | Uses Strands `ContextOffloader` for large `query_data` outputs. |
+| `offload_finding` | Separately enables offloading for large `inspect_result` outputs. |
+
+For example, start with `MODELLM_COST_EXPERIMENTS=conceptual_guidance,conceptual_cache,early_finding_validation,small_analysis_previews`. Add offloading controls independently for comparison. Offloading uses the SDK's 2,500-token threshold and 1,000-token preview, with retrieval enabled and originals retained under `runs/<run>/context/<call_id>/`. Evidence IDs and full registered records remain intact. It affects tool outputs within one invocation; it does not trim initial prompts or repair snapshots. Retrieval calls and cache writes can offset savings, so compare provider cost and completion quality across repeated runs with identical inputs/models, including failures and cold/warm cache behavior. See the [implementation plan](todo/20261015_token_cost_reduction_plan.md).

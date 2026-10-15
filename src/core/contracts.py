@@ -1,5 +1,7 @@
 """Run-scoped declarations. Explanations communicate intent; references are checked."""
 
+import re
+from string import Formatter
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -661,6 +663,47 @@ class AnalysisFinding(Contract):
     )
 
 
+def finding_statement_structure_errors(statement: FindingStatement) -> list[str]:
+    """Shared shape checks for SDK correction and final rendering; never resolve evidence here."""
+    errors, placeholders = [], set()
+    try:
+        parts = list(Formatter().parse(statement.template))
+    except ValueError as exc:
+        return [f"invalid template: {exc}"]
+    for _, field, format_spec, conversion in parts:
+        if field is not None:
+            if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", field) or format_spec or conversion:
+                errors.append(f"placeholder {field!r} must be a simple name without formatting or conversions")
+            placeholders.add(field)
+    if placeholders != set(statement.bindings):
+        errors.append(
+            f"placeholders without bindings {sorted(placeholders - set(statement.bindings))}; "
+            f"bindings without placeholders {sorted(set(statement.bindings) - placeholders)}"
+        )
+    referenced_rows = {binding.row for binding in statement.bindings.values()}
+    selected_aliases = set(statement.selected_rows)
+    if referenced_rows != selected_aliases:
+        errors.append(
+            f"unused selected aliases {sorted(selected_aliases - referenced_rows)}; "
+            f"undeclared bound aliases {sorted(referenced_rows - selected_aliases)}. "
+            "Every selected alias must be used by a binding; remove unused selections or bind their relevant evidence values."
+        )
+    return errors
+
+
+class EarlyValidatedAnalysisFinding(AnalysisFinding):
+    # Opt-in schema: Strands returns these errors to its existing tool loop,
+    # avoiding a fresh invocation and another full evidence snapshot for shape errors.
+    @model_validator(mode="after")
+    def validate_statement_structure(self):
+        errors = [f"Statement {index}: {error}"
+                  for index, statement in enumerate(self.statements, 1)
+                  for error in finding_statement_structure_errors(statement)]
+        if errors:
+            raise ValueError("Finding evidence validation failed:\n" + "\n".join(errors))
+        return self
+
+
 class ResultColumnProfile(Contract):
     column_name: str
     column_type: str
@@ -685,6 +728,21 @@ class AcceptedAnalysisResult(Contract):
     profile: list[ResultColumnProfile]
 
 
+def registered_plot_templates() -> list[str]:
+    """Use the installed Plotly registry for both agent guidance and validation."""
+    from plotly.io import templates
+
+    return sorted(templates)
+
+
+def validate_plot_template(options: dict) -> None:
+    if "template" in options and options["template"] not in registered_plot_templates():
+        raise ValueError(
+            f"Unknown Plotly template: {options['template']!r}. "
+            f"Use a registered template name: {', '.join(registered_plot_templates())}"
+        )
+
+
 class PlotSpec(Contract):
     function: str = Field(description="One Plotly Express function supported by the supplied renderer_capabilities")
     columns: dict[str, Any] = Field(
@@ -694,7 +752,7 @@ class PlotSpec(Contract):
         description="Exactly the supplied presentation_selection, with no additional population filters; empty list when none is supplied"
     )
     options: dict[str, Any] = Field(
-        description="Supported presentation options from renderer_capabilities, such as orientation=h; never field references or data arrays. Empty object if none."
+        description="Supported presentation options from renderer_capabilities, such as orientation=h; template must be a registered name from renderer_templates. Never field references or data arrays. Empty object if none."
     )
 
     @model_validator(mode="after")
@@ -717,4 +775,6 @@ class PlotSpec(Contract):
             raise ValueError(
                 "Plot presentation options must be scalar strings, numbers or booleans"
             )
+        # Strands returns validation errors to the current tool loop for correction.
+        validate_plot_template(self.options)
         return self

@@ -4,7 +4,6 @@ import copy
 import json
 import re
 from pathlib import Path
-from string import Formatter
 from typing import Callable
 from uuid import uuid4
 
@@ -12,7 +11,7 @@ import duckdb
 from strands import tool
 
 from src.core.contracts import (
-    AnalysisFinding, AnalysisSpec, EvidenceRequest,
+    AnalysisFinding, AnalysisSpec, EvidenceRequest, finding_statement_structure_errors,
 )
 
 
@@ -180,37 +179,13 @@ def render_finding(finding: AnalysisFinding, registry: EvidenceRegistry) -> tupl
     rendered, used, errors = [], set(), []
     for index, statement in enumerate(finding.statements, 1):
         prefix = f"Statement {index}"
-        statement_errors = []
-        placeholders = set()
-        try:
-            parts = list(Formatter().parse(statement.template))
-        except ValueError as exc:
-            errors.append(f"{prefix}: invalid template: {exc}")
-            continue
-        for _, field, format_spec, conversion in parts:
-            if field is not None:
-                if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", field) or format_spec or conversion:
-                    statement_errors.append(f"{prefix}: placeholder {field!r} must be a simple name without formatting or conversions")
-                placeholders.add(field)
-        if placeholders != set(statement.bindings):
-            statement_errors.append(
-                f"{prefix}: placeholders without bindings {sorted(placeholders - set(statement.bindings))}; "
-                f"bindings without placeholders {sorted(set(statement.bindings) - placeholders)}"
-            )
+        statement_errors = [f"{prefix}: {error}" for error in finding_statement_structure_errors(statement)]
         rows = {}
         for alias, ref in statement.selected_rows.items():
             try:
                 rows[alias] = registry.row(ref)
             except ValueError as exc:
                 statement_errors.append(f"{prefix}, selected alias {alias!r}: {exc}")
-        referenced_rows = {binding.row for binding in statement.bindings.values()}
-        selected_aliases = set(statement.selected_rows)
-        if referenced_rows != selected_aliases:
-            statement_errors.append(
-                f"{prefix}: unused selected aliases {sorted(selected_aliases - referenced_rows)}; "
-                f"undeclared bound aliases {sorted(referenced_rows - selected_aliases)}. "
-                "Every selected alias must be used by a binding; remove unused selections or bind their relevant evidence values."
-            )
         values = {}
         for placeholder, binding in statement.bindings.items():
             if binding.row not in rows:

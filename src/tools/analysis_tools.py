@@ -136,3 +136,12 @@ class DuckDBAnalysisTools:
             "truncated": truncated,
             "rows": json.loads(frame.to_json(orient="records", date_format="iso")),
         }
+
+    @tool(name="query_data")
+    def query_data_small_preview(self, sql: str, limit: int = 20) -> dict:
+        """Preview validated models; request a larger limit explicitly (up to 500).
+
+        truncated describes this preview cap, not completeness of SQL containing LIMIT.
+        """
+        # Separate SDK tool signature preserves the original schema when the experiment is off.
+        return self.query_data(sql, limit)

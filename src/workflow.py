@@ -1,6 +1,7 @@
 import json
 import uuid
 from datetime import datetime, timezone
+from importlib.metadata import version
 from pathlib import Path
 from threading import Lock
 from typing import Callable
@@ -21,6 +22,7 @@ from .analysis import (
     representation_selections,
 )
 from .core.contracts import CONTRACT_VERSION, plan_issues
+from .context_cost import configured_cost_experiments
 from .data import load_raw, profile, relationships, schemas
 from .dbt import dbt_results, run_dbt, write_project
 from .experiments import provenance, record_run
@@ -41,6 +43,8 @@ def run(
     *,
     on_event: Callable | None = None,
 ) -> dict:
+    # Snapshot once so every stage and repair in an A/B run uses the same controls.
+    cost_experiments = configured_cost_experiments()
     root = root.resolve()
     cleanup = cleanup_run_databases(root)
     run_id = f"{datetime.now(timezone.utc):%y%m%d_%H%M}_{uuid.uuid4().hex[:12]}"
@@ -56,6 +60,8 @@ def run(
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "storage_cleanup": cleanup,
         "events": events,
+        "cost_experiments": sorted(cost_experiments),
+        "strands_version": version("strands-agents"),
     }
 
     save_lock = Lock()
@@ -149,7 +155,8 @@ def run(
         issues = []
         state["conceptual_attempts"] = []
         for revision in range(MAX_CONCEPTUAL_REVISIONS + 1):
-            plan = agents.conceptual(request, profiles, links, emit, feedback=issues, previous=plan)
+            plan = agents.conceptual(request, profiles, links, emit, feedback=issues, previous=plan,
+                                     cost_experiments=cost_experiments)
             attempt = {"attempt": revision + 1, "status": "proposed", "proposal": plan.model_dump()}
             state["conceptual_attempts"].append(attempt)
             save()
@@ -193,7 +200,8 @@ def run(
         implementation = None
         while True:
             implementation = agents.implement(
-                plan, profiles, links, emit, failure=validation_failure[-5000:], previous=implementation
+                plan, profiles, links, emit, failure=validation_failure[-5000:], previous=implementation,
+                cost_experiments=cost_experiments,
             )
             save_dbt_attempt(repair_count + 1, implementation)
             produced_models = {
@@ -314,6 +322,7 @@ def run(
                 database,
                 feedback=feedback,
                 previous=analysis,
+                cost_experiments=cost_experiments,
             )
             analysis = proposed
             emit(
@@ -406,7 +415,8 @@ def run(
             finding = None
             for attempt in range(MAX_FINDING_REPAIRS + 1):
                 finding = agents.interpret(
-                    spec, accepted_result, emit, result_tools, feedback=finding_error, previous=finding
+                    spec, accepted_result, emit, result_tools, feedback=finding_error, previous=finding,
+                    cost_experiments=cost_experiments,
                 )
                 try:
                     finding_text, evidence = render_finding(finding, registry)
@@ -472,7 +482,8 @@ def run(
                 continue
             for variant_index, (label, selection) in enumerate(representation_selections(database, spec, accepted_result)):
                 title = spec.title if label is None else f"{spec.title} — {label}"
-                plot = agents.plot(spec, accepted_result, state["findings"][index], emit, database, selection=selection)
+                plot = agents.plot(spec, accepted_result, state["findings"][index], emit, database,
+                                   selection=selection, cost_experiments=cost_experiments)
                 try:
                     validate_plot_spec(plot, accepted_result, selection)
                     frame = load_result_frame(database, accepted_result)

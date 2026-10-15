@@ -4,12 +4,15 @@ import os
 import time
 import uuid
 from collections.abc import Callable
+from importlib.metadata import version
 from pathlib import Path
 from typing import TypeVar
 
 from pydantic import BaseModel
 
 from src.core.prompt import ANALYSIS, ANALYSIS_FINDING, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
+from src.core.prompt.analysis import ANALYSIS_PREVIEW_GUIDANCE
+from src.core.prompt.conceptual import CONCEPTUAL_REFERENCE_GUIDANCE
 from src.tools.analysis_tools import DuckDBAnalysisTools
 from src.tools.result_tools import DuckDBResultTools
 
@@ -20,11 +23,17 @@ from .core.contracts import (
     AnalysisSpec,
     AnalyticalPlan,
     DbtImplementation,
+    EarlyValidatedAnalysisFinding,
     PlotSpec,
     ResultFilter,
     ValidationIssue,
+    registered_plot_templates,
 )
 from .analysis import plot_capabilities
+from .context_cost import (
+    COST_EXPERIMENT_STAGES, configured_cost_experiments,
+    split_stable_and_repair_context, tool_result_offload_plugins,
+)
 
 T = TypeVar("T", bound=BaseModel)
 DEFAULT_BEDROCK_MODEL_ID = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -44,22 +53,26 @@ async def _invoke(
     emit: Callable,
     system_prompt: str,
     tools: list | None = None,
+    *,
+    cost_experiments: frozenset[str] | None = None,
+    context_directory: Path | None = None,
 ) -> T:
     from botocore.config import Config
     from strands import Agent
     from strands.models import BedrockModel, CacheConfig
     from strands.tools.structured_output.structured_output_tool import StructuredOutputTool
 
+    experiments = configured_cost_experiments(cost_experiments)
     model_id = configured_model_id(stage)
     nova_reasoning = "amazon.nova-2-lite" in model_id
-    cache_enabled = stage in {
+    cache_enabled = (stage in {
         "analytical interpretation", "generating dbt models",
         "analytical finding", "visualisation generation",
-    } and (
+    } or stage == "conceptual modelling" and "conceptual_cache" in experiments) and (
         "anthropic" in model_id.lower() or "claude" in model_id.lower()
     )
     if cache_enabled and isinstance(prompt, list):
-        # dbt keeps stable modelling evidence before changing repair feedback.
+        # Keep stable modelling evidence before changing repair feedback.
         prompt = [prompt[0], {"cachePoint": {"type": "default"}}, *prompt[1:]]
     model = BedrockModel(
         model_id=model_id,
@@ -70,15 +83,24 @@ async def _invoke(
             "reasoningConfig": {"type": "enabled", "maxReasoningEffort": "low"},
         }} if nova_reasoning else {}),
     )
-    agent = Agent(model=model, system_prompt=system_prompt, tools=tools or [])
     started = time.monotonic()
     call_id = uuid.uuid4().hex[:12]
+    offload_directory = context_directory / call_id if context_directory else None
+    plugins = tool_result_offload_plugins(stage, experiments, offload_directory)
+    agent = Agent(model=model, system_prompt=system_prompt, tools=tools or [],
+                  **({"plugins": plugins} if plugins else {}))
+    call_context = {
+        "cost_experiments": sorted(name for name in experiments if COST_EXPERIMENT_STAGES[name] == stage),
+        "strands_version": version("strands-agents"),
+        "context_directory": str(offload_directory) if plugins else None,
+    }
     emit(stage, "model_call", f"Calling {model_id}", {
         "call_id": call_id, "model_id": model_id, "status": "started",
         "region": model.client.meta.region_name,
         "read_timeout_seconds": 3600,
         "reasoning_effort": "low" if nova_reasoning else None,
         "prompt_cache": {"enabled": cache_enabled, "ttl": "5m" if cache_enabled else None},
+        **call_context,
     })
     if nova_reasoning:
         emit(stage, "reasoning_status", "Extended reasoning enabled (low); Nova redacts its reasoning text",
@@ -173,7 +195,7 @@ async def _invoke(
         stage,
         "model_call",
         f"{model_id} completed in {time.monotonic() - started:.1f}s",
-        {"call_id": call_id, "model_id": model_id, "status": "completed", **usage},
+        {"call_id": call_id, "model_id": model_id, "status": "completed", **call_context, **usage},
     )
     return final.structured_output
 
@@ -185,8 +207,12 @@ def invoke(
     emit: Callable,
     system_prompt: str,
     tools: list | None = None,
+    *,
+    cost_experiments: frozenset[str] | None = None,
+    context_directory: Path | None = None,
 ) -> T:
-    return asyncio.run(_invoke(prompt, schema, stage, emit, system_prompt, tools))
+    return asyncio.run(_invoke(prompt, schema, stage, emit, system_prompt, tools,
+                              cost_experiments=cost_experiments, context_directory=context_directory))
 
 
 def conceptual(
@@ -196,19 +222,24 @@ def conceptual(
     emit: Callable,
     feedback: list[ValidationIssue] | None = None,
     previous: AnalyticalPlan | None = None,
+    *,
+    cost_experiments: frozenset[str] | None = None,
 ) -> AnalyticalPlan:
-    prompt = json.dumps(
-        {
-            "request": request,
-            "profiles": profiles,
-            "candidate_relationships": relationships,
-            "previous_plan_issues": [issue.model_dump() for issue in (feedback or [])],
-            "previous_plan": previous.model_dump() if previous else None,
-        },
-        default=str,
-    )
+    experiments = configured_cost_experiments(cost_experiments)
+    stable = {
+        "request": request,
+        "profiles": profiles,
+        "candidate_relationships": relationships,
+    }
+    repair = {
+        "previous_plan_issues": [issue.model_dump() for issue in (feedback or [])],
+        "previous_plan": previous.model_dump() if previous else None,
+    }
+    prompt = (split_stable_and_repair_context(stable, repair) if "conceptual_cache" in experiments
+              else json.dumps({**stable, **repair}, default=str))
+    system_prompt = CONCEPTUAL_MODEL + (CONCEPTUAL_REFERENCE_GUIDANCE if "conceptual_guidance" in experiments else "")
     return invoke(
-        prompt, AnalyticalPlan, "conceptual modelling", emit, CONCEPTUAL_MODEL
+        prompt, AnalyticalPlan, "conceptual modelling", emit, system_prompt, cost_experiments=experiments,
     )
 
 
@@ -219,18 +250,21 @@ def implement(
     emit: Callable,
     failure: str = "",
     previous: DbtImplementation | None = None,
+    *,
+    cost_experiments: frozenset[str] | None = None,
 ) -> DbtImplementation:
-    prompt = [
-        {"text": json.dumps({
+    prompt = split_stable_and_repair_context(
+        {
             "plan": plan.model_dump(), "profiles": profiles, "relationships": relationships,
-        }, default=str)},
-        {"text": json.dumps({
+        },
+        {
             "previous_failure": failure,
             "previous_implementation": previous.model_dump() if previous else None,
-        }, default=str)},
-    ]
+        },
+    )
     return invoke(
-        prompt, DbtImplementation, "generating dbt models", emit, DIMENSIONAL_MODEL
+        prompt, DbtImplementation, "generating dbt models", emit, DIMENSIONAL_MODEL,
+        cost_experiments=cost_experiments,
     )
 
 
@@ -243,9 +277,12 @@ def analyse(
     database: Path,
     feedback: str = "",
     previous: AnalysisPlan | None = None,
+    *,
+    cost_experiments: frozenset[str] | None = None,
 ) -> AnalysisPlan:
-
+    experiments = configured_cost_experiments(cost_experiments)
     db = DuckDBAnalysisTools(database, list(model_schemas))
+    small_previews = "small_analysis_previews" in experiments
 
     prompt = json.dumps(
         {
@@ -263,12 +300,13 @@ def analyse(
         AnalysisPlan,
         "analytical interpretation",
         emit,
-        ANALYSIS,
+        ANALYSIS + (ANALYSIS_PREVIEW_GUIDANCE if small_previews else ""),
         tools=[
             db.list_models,
             db.describe_model,
-            db.query_data,
+            db.query_data_small_preview if small_previews else db.query_data,
         ],
+        cost_experiments=experiments, context_directory=database.parent / "context",
     )
 
     return result
@@ -281,7 +319,10 @@ def interpret(
     db: DuckDBResultTools,
     feedback: str = "",
     previous: AnalysisFinding | None = None,
+    *,
+    cost_experiments: frozenset[str] | None = None,
 ) -> AnalysisFinding:
+    experiments = configured_cost_experiments(cost_experiments)
     prompt = json.dumps(
         {
             "title": spec.title,
@@ -303,11 +344,12 @@ def interpret(
     )
     return invoke(
         prompt,
-        AnalysisFinding,
+        EarlyValidatedAnalysisFinding if "early_finding_validation" in experiments else AnalysisFinding,
         "analytical finding",
         emit,
         ANALYSIS_FINDING,
         tools=[db.inspect_result],
+        cost_experiments=experiments, context_directory=db.database.parent / "context",
     )
 
 
@@ -318,6 +360,8 @@ def plot(
     emit: Callable,
     database: Path,
     selection: list[ResultFilter] | None = None,
+    *,
+    cost_experiments: frozenset[str] | None = None,
 ) -> PlotSpec:
 
     db = DuckDBResultTools(
@@ -336,6 +380,7 @@ def plot(
             "presentation_selection": [item.model_dump() for item in (selection or [])],
             "visualisation_goal": spec.visualisation_goal,
             "renderer_capabilities": plot_capabilities(),
+            "renderer_templates": registered_plot_templates(),
             "analytical_result": {
                 "grain": spec.grain,
                 "dimensions": [item.model_dump() for item in spec.dimensions],
@@ -357,4 +402,5 @@ def plot(
         tools=[
             db.category_counts,
         ],
+        cost_experiments=cost_experiments,
     )

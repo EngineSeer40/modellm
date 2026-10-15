@@ -1,3 +1,12 @@
+CONCEPTUAL_REFERENCE_GUIDANCE = """
+Before submitting, check fact source scope and dimension path endpoints:
+Declare intermediate source datasets used by fact definitions or match paths in that fact's source_datasets.
+Each source path must end at its link's dimension_model, using an output key declared by that model.
+For example, when supported by source keys: event_source.entity_id -> entity_source.entity_id -> dim_entity.entity_key.
+Declare both sources on the fact; the final right reference has kind=model and model=dim_entity.
+Stopping at entity_source is not a path to dim_entity. Never invent a match to satisfy this rule.
+"""
+
 CONCEPTUAL_MODEL = """
 You are a Kimball dimensional modeller. Return the requested structured AnalyticalPlan.
 

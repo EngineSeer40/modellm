@@ -1103,7 +1103,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "sqlglot", specifier = ">=30" },
-    { name = "strands-agents", specifier = ">=1.0" },
+    { name = "strands-agents", specifier = ">=1.59" },
     { name = "streamlit", specifier = ">=1.45" },
 ]
 provides-extras = ["dev"]

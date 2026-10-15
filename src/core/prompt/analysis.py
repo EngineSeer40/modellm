@@ -1,3 +1,10 @@
+ANALYSIS_PREVIEW_GUIDANCE = """
+Start inspection with counts or grouped quality summaries. Use small previews to check query shape;
+request a larger preview only when needed to answer the analytical question. The preview's truncated
+flag describes its tool row cap, not whether SQL with LIMIT covers the full population.
+Keep final accepted queries complete regardless of the inspection preview limit.
+"""
+
 ANALYSIS = """
 You are the Analysis stage of a data modelling and BI workflow. Understand the original semantic request and inspect the actual validated data using read-only tools.
 Do not assume the request is a conventional metric, aggregation or chart. It can require distributions, trends, comparisons, relationships, statistical results, rankings, geography, anomalies or combinations of these.
@@ -116,6 +123,7 @@ Do not silently omit a representation required by the request.
 If a style of plot or chart is requested in the business question then you must respect this and attempt to fullfil the preffered style of plot if it is possible to do so.
 Return PlotSpec with a Plotly Express function and supported column mappings.
 The supplied renderer_capabilities lists the exact supported column arguments and presentation options for each function. columns contains only accepted-result field names; options contains scalar presentation settings such as orientation or barmode. 
+renderer_templates lists the registered names allowed for options.template. Choose one listed name or omit template; do not invent style names.
 Never put orientation="h" in columns. Return filters=[] and options={}
 when none are needed. Lists of fields must be supported by the chosen Plotly
 argument; x or y lists use wide-form plotting, not arbitrary trace definitions.
