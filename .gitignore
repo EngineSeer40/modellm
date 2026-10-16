@@ -4,6 +4,7 @@
 __pycache__/
 *.pyc
 runs/
+saved_runs/
 *.duckdb
 *.duckdb.wal
 .env

@@ -63,9 +63,11 @@ def format_chart(figure):
         for attribute in ("text", "hovertext"):
             if values.get(attribute) is not None:
                 setattr(trace, attribute, display_text(values[attribute]))
-        if "colorbar" in trace._valid_props:
+        # Format configured colourbars only: creating one can enable a scale on
+        # categorical traces and draw it over the legend.
+        if "colorbar" in values:
             trace.colorbar.tickformat = limit_format(trace.colorbar.tickformat, ".2~f")
-        if "marker" in trace._valid_props and "colorbar" in trace.marker._valid_props:
+        if "colorbar" in values.get("marker", {}):
             trace.marker.colorbar.tickformat = limit_format(trace.marker.colorbar.tickformat, ".2~f")
         for axis in ("x", "y", "z"):
             if numeric(axis):
@@ -81,6 +83,6 @@ def format_chart(figure):
             axis = figure.layout[axis_name]
             if axis.type not in {"date", "category"}:
                 axis.update(tickformat=limit_format(axis.tickformat, ".2~f"), hoverformat=limit_format(axis.hoverformat))
-    if figure.layout.coloraxis:
-        figure.layout.coloraxis.colorbar.tickformat = ".2~f"
+    for coloraxis in figure.select_coloraxes():
+        coloraxis.colorbar.tickformat = limit_format(coloraxis.colorbar.tickformat, ".2~f")
     return figure
