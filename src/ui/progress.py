@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from src.run import RunEvent, RunState
+
 
 PHASES = (
     ("Loading datasets", "Reading your uploaded files."),
@@ -28,7 +30,7 @@ COMPLETION_STAGES = {
 PROGRESS_KINDS = {"start", "done", "failure", "repair", "model_call", "contract_check"}
 
 
-def project_progress(events: list[dict], status: str = "running") -> list[dict]:
+def project_progress(events: list[RunEvent], status: str = "running") -> list[dict]:
     phases = [{"label": label, "detail": detail, "status": "pending", "repairs": 0}
               for label, detail in PHASES]
     current = None
@@ -64,7 +66,7 @@ def project_progress(events: list[dict], status: str = "running") -> list[dict]:
     return phases
 
 
-def repair_counts(state: dict) -> dict[str, int]:
+def repair_counts(state: RunState) -> dict[str, int]:
     counts = {}
     for label, key in (("Model design", "conceptual_attempts"), ("dbt", "dbt_attempts"),
                        ("Analysis", "analysis_attempts"), ("Findings", "finding_attempts")):
@@ -74,7 +76,7 @@ def repair_counts(state: dict) -> dict[str, int]:
     return counts
 
 
-def failure_message(state: dict) -> str:
+def failure_message(state: RunState) -> str:
     phases = project_progress(state.get("events", []), "failed")
     failed = next((phase["label"] for phase in phases if phase["status"] == "failed"), None)
     messages = {
@@ -89,7 +91,7 @@ def failure_message(state: dict) -> str:
     return messages.get(failed, "The run could not be completed.")
 
 
-def duration_label(state: dict) -> str:
+def duration_label(state: RunState) -> str:
     events = state.get("events", [])
     start = state.get("started_at_utc") or next((e.get("time") for e in events if e.get("time")), None)
     end = next((e.get("time") for e in reversed(events) if e.get("time")), None)

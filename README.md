@@ -153,4 +153,23 @@ uv lock --check
 
 Ordinary tests do not invoke Bedrock. Container smoke checks and CloudFormation lint commands are documented in [infra/README.md](infra/README.md).
 
-The UI lives in [src/ui/](src/ui/), workflow orchestration in [src/workflow.py](src/workflow.py), and structured contracts in [src/core/contracts.py](src/core/contracts.py). Analysis executes against validated dbt models; findings cite registered evidence from accepted results. Plotting reads accepted results and does not choose a new business aggregation. Successful execution and passing dbt tests do not establish business correctness: review the assumptions, methodology and data-quality warnings for each run.
+The main code boundaries are:
+
+| File | Responsibility |
+|---|---|
+| [src/config.py](src/config.py) | Immutable settings and existing environment-variable defaults |
+| [src/workspace.py](src/workspace.py) | Owned workspace paths and uploaded inputs |
+| [src/run.py](src/run.py) | Shared record types, event emission and atomic result persistence |
+| [src/execution.py](src/execution.py) | Admission, worker supervision and model-call budgets |
+| [src/workflow.py](src/workflow.py) | Explicit workflow stages and their individual repair loops |
+| [src/agents.py](src/agents.py) / [src/agent_runtime.py](src/agent_runtime.py) | Domain prompts and tools / Strands execution, caching and streaming |
+| [src/core/contracts.py](src/core/contracts.py) | Agent output schemas and validation used by SDK correction loops |
+| [src/modelling_validation.py](src/modelling_validation.py) / [src/sql_policy.py](src/sql_policy.py) | Evidence-dependent model checks / shared SQL and generated dbt policy |
+| [src/analysis.py](src/analysis.py) / [src/visualisation.py](src/visualisation.py) | Accepted results / supported visual encodings and rendering |
+| [src/ui/](src/ui/) | Streamlit composition and presentation, including saved-run replay |
+
+Run state remains a dictionary on disk. `RunRecord` owns saving and events without changing existing JSON keys, status values or artifacts. Stateless policy checks remain functions, and repair loops stay with their stages.
+
+[src/telemetry.py](src/telemetry.py) adds workflow and stage/attempt spans around native Strands tracing, with run and model-call correlation. Without a configured OpenTelemetry provider, tracing is a no-op. No cloud exporter or Langfuse credentials are configured by the application. A future exporter should initialise once in the worker process and use its bounded flush on normal exit; forced termination can lose final spans. Saved-dashboard mode starts no workflow traces. Cloud export and prompt/tool-content capture require a separate configuration step.
+
+Analysis executes against validated dbt models; findings cite registered evidence from accepted results. Plotting reads accepted results and does not choose a new business aggregation. Successful execution and passing dbt tests do not establish business correctness: review the assumptions, methodology and data-quality warnings for each run.

@@ -1,11 +1,15 @@
 """The only workflow path accepts uploaded data and agent decisions."""
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 from src import agents
 from src.core.contracts import AnalysisDimension, AnalysisFinding, AnalysisMeasure, AnalysisPlan, AnalysisSpec, AnalyticalPlan, BusinessProcessPlan, DbtFile, DbtImplementation, DimensionPlan, FactDimensionLink, FactPlan, FindingStatement, EvidenceAggregate, PlotSpec, SourceMatchPath, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell
 from src.workflow import run
 import src.workflow as workflow_module
 
-def test_uploaded_data_follows_agent_path_through_dbt_and_plot(tmp_path: Path, monkeypatch):
+@pytest.fixture
+def workflow_case(tmp_path: Path, monkeypatch):
     accounts = tmp_path / 'accounts.csv'
     events = tmp_path / 'events.csv'
     accounts.write_text('account_id,account_name\n1,North\n2,South\n')
@@ -48,7 +52,14 @@ def test_uploaded_data_follows_agent_path_through_dbt_and_plot(tmp_path: Path, m
         return AnalysisFinding(statements=[FindingStatement(template='{account} has the highest recorded amount ({amount}).', selected_rows={'top': EvidenceRowRef(evidence_id=record['id'], row_id=record['rows'][0]['row_id'])}, bindings={'account': FindingCell(row='top', column='account_name'), 'amount': FindingCell(row='top', column='total')})], caveats=[])
     monkeypatch.setattr(agents, 'interpret', fake_interpret)
     monkeypatch.setattr(agents, 'plot', lambda *args, **kwargs: PlotSpec(function='bar', columns={'x': 'account_name', 'y': 'total_amount'}, filters=[], options={}))
-    result = run([accounts, events], 'Compare accounts', tmp_path / 'runs')
+    return SimpleNamespace(paths=[accounts, events], root=tmp_path / 'runs',
+                           implementation_failures=implementation_failures, analysis_calls=analysis_calls)
+
+
+def test_uploaded_data_follows_agent_path_through_dbt_and_plot(workflow_case):
+    implementation_failures = workflow_case.implementation_failures
+    analysis_calls = workflow_case.analysis_calls
+    result = run(workflow_case.paths, 'Compare accounts', workflow_case.root)
     assert result['status'] == 'complete', result.get('error')
     assert result['repair_attempts'] == 2
     assert implementation_failures[0] == ''
@@ -65,3 +76,43 @@ def test_uploaded_data_follows_agent_path_through_dbt_and_plot(tmp_path: Path, m
     assert result['plot_specs'][0]['function'] == 'bar'
     assert [item['kind'] for item in result['events']].count('contract_check') >= 4
     assert (Path(result['run_dir']) / result['charts'][0]['file']).exists()
+
+
+@pytest.mark.parametrize('failure', ['finding', 'plotting', 'tracker'])
+def test_failure_boundaries_preserve_attempts_and_terminal_records(workflow_case, monkeypatch, failure):
+    calls = []
+    if failure == 'finding':
+        def reject_finding(*args):
+            calls.append('finding')
+            raise ValueError('Unbound finding evidence')
+        monkeypatch.setattr(workflow_module, 'render_finding', reject_finding)
+    elif failure == 'plotting':
+        def reject_plot(*args, **kwargs):
+            calls.append('plotting')
+            return PlotSpec(function='unsupported', columns={}, filters=[], options={})
+        monkeypatch.setattr(agents, 'plot', reject_plot)
+    else:
+        def reject_ledger(*args):
+            calls.append('tracker')
+            raise OSError('Ledger unavailable')
+        monkeypatch.setattr(workflow_module, 'record_run', reject_ledger)
+    events = []
+    state = run(workflow_case.paths, 'Compare accounts', workflow_case.root, on_event=events.append)
+    assert state['status'] == ('complete' if failure == 'tracker' else 'failed')
+    terminal = [event for event in state['events'] if event['stage'] == 'dashboard completion']
+    assert len(terminal) == 1
+    assert terminal[0]['kind'] == ('done' if failure == 'tracker' else 'failure')
+    if failure == 'finding':
+        assert calls == ['finding', 'finding']
+        assert [attempt['status'] for attempt in state['finding_attempts']] == ['rejected', 'rejected']
+    elif failure == 'plotting':
+        assert calls == ['plotting']  # Plot rejection has no extra repair invocation.
+        assert state['plot_attempts'][0]['status'] == 'rejected'
+        assert not state['charts']
+    else:
+        assert calls == ['tracker', 'tracker']
+        assert state['experiment_tracker_error'] == 'OSError: Ledger unavailable'
+        assert not any(event['stage'] == 'experiment tracking' for event in events)
+    import json
+    assert json.loads((Path(state['run_dir']) / 'result.json').read_text()) == state
+    assert not (Path(state['run_dir']) / 'input').exists()

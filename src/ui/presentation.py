@@ -84,5 +84,6 @@ def format_chart(figure):
             if axis.type not in {"date", "category"}:
                 axis.update(tickformat=limit_format(axis.tickformat, ".2~f"), hoverformat=limit_format(axis.hoverformat))
     for coloraxis in figure.select_coloraxes():
-        coloraxis.colorbar.tickformat = limit_format(coloraxis.colorbar.tickformat, ".2~f")
+        if coloraxis.to_plotly_json():
+            coloraxis.colorbar.tickformat = limit_format(coloraxis.colorbar.tickformat, ".2~f")
     return figure

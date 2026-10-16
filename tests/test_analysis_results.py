@@ -4,7 +4,9 @@ import duckdb
 from src import agents
 from src.analysis import accept_analyses, load_result_frame
 from src.core.contracts import AnalysisDimension, AnalysisMeasure, AnalysisPlan, AnalysisSpec, AnalyticalPlan, BusinessProcessPlan, FactPlan, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell
-from src.tools.analysis_tools import validate_analysis_sql
+from src.sql_policy import (
+    validate_analysis_sql,
+)
 
 def test_final_analysis_keeps_all_rows_after_a_truncated_agent_preview(tmp_path: Path, monkeypatch):
     database = tmp_path / 'modellm.duckdb'

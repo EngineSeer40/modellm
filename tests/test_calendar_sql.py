@@ -8,7 +8,9 @@ from src.core.contracts import DbtFile, DbtImplementation
 from src.database import connect
 from src.dbt import run_dbt, write_project
 from src.sql_policy import validate_dbt_files
-from src.tools.analysis_tools import validate_analysis_sql
+from src.sql_policy import (
+    validate_analysis_sql,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "calendar_sql"

@@ -313,7 +313,7 @@ def test_demo_inputs_fill_editable_draft_and_use_normal_submission(tmp_path, mon
 
 
 def test_nested_cte_alias_cannot_authorize_a_real_table():
-    from src.tools.analysis_tools import validate_analysis_sql
+    from src.sql_policy import validate_analysis_sql
     malicious = """WITH harmless AS (WITH private AS (SELECT * FROM main.fact_events)
                    SELECT * FROM private) SELECT * FROM private JOIN harmless ON true"""
     with pytest.raises(ValueError, match="unvalidated model"):

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src import agents
+from src import agent_runtime as agents
 from src.config import ReleaseSettings
 from src.execution import RunBudget
 from src.usage import estimate_usage_cost, summarize_usage

@@ -1,13 +1,11 @@
-"""Accept analytical results in DuckDB and render their data with Plotly."""
+"""Accept, profile and load analytical results from validated DuckDB models."""
 
-import inspect
 import math
 import re
 from pathlib import Path
 
 from .database import connect
 import pandas as pd
-import plotly.express as px
 import sqlglot
 from sqlglot import exp
 
@@ -15,13 +13,9 @@ from .core.contracts import (
     AcceptedAnalysisResult,
     AnalysisPlan,
     AnalysisSpec,
-    AnalyticalPlan,
-    PlotSpec,
-    ResultFilter,
-    validate_plot_template,
 )
 from .data import identifier
-from .tools.analysis_tools import POPULATION_CTE, validate_analysis_sql, validate_variant_sql
+from .sql_policy import POPULATION_CTE, validate_analysis_sql, validate_variant_sql
 
 
 class AnalysisAcceptanceError(RuntimeError):
@@ -135,55 +129,6 @@ def validate_result_semantics(
                 raise ValueError(f"{spec.title}: {measure.field} component {field} is not numeric")
 
 
-def validate_built_models(
-    database: Path, plan: AnalyticalPlan, built_schemas: dict[str, dict[str, str]]
-) -> list[str]:
-    """Check run-declared output interfaces and optional declared grain keys."""
-    issues: list[str] = []
-    models = plan.dimensions + plan.facts
-    for model in models:
-        actual = set(built_schemas.get(model.name, {}))
-        required = {field.name for field in model.output_fields}
-        missing = required - actual
-        if missing:
-            issues.append(f"{model.name} omits planned outputs: {sorted(missing)}")
-        keys = model.grain_key_fields
-        if keys and set(keys) <= actual:
-            table = f'main."{identifier(model.name)}"'
-            fields = ", ".join('"' + field.replace('"', '""') + '"' for field in keys)
-            with connect(database, read_only=True) as con:
-                duplicates = con.execute(
-                    f"SELECT {fields}, count(*) FROM {table} GROUP BY {fields} HAVING count(*) > 1 LIMIT 5"
-                ).fetchall()
-            if duplicates:
-                samples = []
-                with connect(database, read_only=True) as con:
-                    for row in duplicates:
-                        sample = dict(zip([*keys, "observed_row_count"], row))
-                        predicate = " AND ".join('"' + key.replace('"', '""') + '" IS NOT DISTINCT FROM ?' for key in keys)
-                        cursor = con.execute(f"SELECT * FROM {table} WHERE {predicate} LIMIT 3", list(row[:-1]))
-                        columns = [item[0] for item in cursor.description]
-                        sample["model_rows"] = [dict(zip(columns, values)) for values in cursor.fetchall()]
-                        samples.append(sample)
-                issues.append(f"{model.name} duplicates declared grain keys {keys}; observed examples: {samples}")
-    for fact in plan.facts:
-        fact_columns = set(built_schemas.get(fact.name, {}))
-        for link in fact.dimension_links:
-            dimension_columns = set(built_schemas.get(link.dimension_model, {}))
-            for pair in link.key_pairs:
-                if pair.fact_field not in fact_columns:
-                    issues.append(f"{fact.name} omits fact link output {pair.fact_field}")
-                if pair.dimension_field not in dimension_columns:
-                    issues.append(f"{link.dimension_model} omits join key {pair.dimension_field} required by {fact.name}")
-            for path in link.source_paths:
-                for step in path.steps:
-                    for pair in step.pairs:
-                        for endpoint in (pair.left, pair.right):
-                            if endpoint.kind == "model" and endpoint.column not in built_schemas.get(endpoint.model, {}):
-                                issues.append(f"{endpoint.model} omits match output {endpoint.column} required by {fact.name}")
-    return sorted(set(issues))
-
-
 def summarize_models(database: Path, model_names: list[str]) -> dict:
     summaries = {}
     with connect(database, read_only=True) as con:
@@ -199,175 +144,12 @@ def summarize_models(database: Path, model_names: list[str]) -> dict:
     return summaries
 
 
-PLOTLY_COLUMN_ARGUMENTS = {
-    "x",
-    "y",
-    "z",
-    "color",
-    "size",
-    "symbol",
-    "text",
-    "facet_row",
-    "facet_col",
-    "hover_name",
-    "hover_data",
-    "names",
-    "values",
-    "path",
-    "ids",
-    "parents",
-    "lat",
-    "lon",
-    "locations",
-    "animation_frame",
-    "animation_group",
-    "dimensions",
-    "custom_data",
-    "line_group",
-    "line_dash",
-    "pattern_shape",
-    "base",
-    "error_x",
-    "error_x_minus",
-    "error_y",
-    "error_y_minus",
-    "error_z",
-    "error_z_minus",
-    "a",
-    "b",
-    "c",
-    "r",
-    "theta",
-    "x_start",
-    "x_end",
-}
-
-PLOTLY_PRESENTATION_ARGUMENTS = {
-    "orientation", "barmode", "line_shape", "markers", "points", "opacity",
-    "log_x", "log_y", "width", "height", "template", "text_auto",
-}
-
-
-def plot_capabilities() -> dict:
-    """Tell the agent which arguments this renderer actually passes to Plotly."""
-    capabilities = {}
-    for name in dir(px):
-        function = getattr(px, name)
-        if not callable(function) or name.startswith("_"):
-            continue
-        parameters = inspect.signature(function).parameters
-        if "title" not in parameters or ("data_frame" not in parameters and name != "imshow"):
-            continue
-        capabilities[name] = {
-            "columns": sorted(PLOTLY_COLUMN_ARGUMENTS & parameters.keys()) if name != "imshow" else [],
-            "options": sorted(PLOTLY_PRESENTATION_ARGUMENTS & parameters.keys()),
-        }
-    return capabilities
-
-
-def validate_plot_arguments(plot: PlotSpec) -> None:
-    supported = plot_capabilities().get(plot.function)
-    if supported is None:
-        raise ValueError(f"Unsupported Plotly Express function: {plot.function}")
-    for argument in plot.columns:
-        if argument not in supported["columns"]:
-            hint = "; place presentation settings in options" if argument in supported["options"] else ""
-            raise ValueError(f"Unsupported plot column argument for {plot.function}: {argument}{hint}")
-    for argument in plot.options:
-        if argument not in supported["options"]:
-            raise ValueError(f"Unsupported plot presentation option for {plot.function}: {argument}")
-    validate_plot_template(plot.options)
-
-
 def load_result_frame(
     database: Path,
     result: AcceptedAnalysisResult,
 ) -> pd.DataFrame:
     with connect(database, read_only=True) as con:
         return con.execute(f"SELECT * FROM {result.relation}").df()
-
-
-def representation_selections(database: Path, spec: AnalysisSpec, result: AcceptedAnalysisResult):
-    """Present every representation Analysis supplied; never compute a new grain."""
-    if not spec.variant_field:
-        return [(None, [])]
-    field = '"' + spec.variant_field.replace('"', '""') + '"'
-    with connect(database, read_only=True) as con:
-        values = con.execute(f"SELECT DISTINCT {field} FROM {result.relation} ORDER BY {field}").fetchall()
-    selections = []
-    for (value,) in values:
-        if value is None:
-            selections.append(("Unspecified representation", [ResultFilter(field=spec.variant_field, operator="is_null", values=[])]))
-        else:
-            scalar = value if isinstance(value, (str, int, float, bool)) else str(value)
-            selections.append((str(value), [ResultFilter(field=spec.variant_field, operator="eq", values=[scalar])]))
-    return selections
-
-
-def validate_plot_spec(plot: PlotSpec, result: AcceptedAnalysisResult,
-                       selection: list[ResultFilter] | None = None) -> None:
-    validate_plot_arguments(plot)
-    if plot.filters != (selection or []):
-        raise ValueError("Plot filters must equal the supplied presentation selection; no additional population filters")
-    available = set(result.columns)
-    for argument, value in plot.columns.items():
-        names = value if isinstance(value, list) else [value]
-        if not names or any(name not in available for name in names):
-            raise ValueError(f"Plot references a missing accepted-result column: {argument}={value}")
-    for selection in plot.filters:
-        if selection.field not in available:
-            raise ValueError(f"Plot filter references missing accepted-result column: {selection.field}")
-        if selection.operator == "eq" and len(selection.values) != 1:
-            raise ValueError("Plot eq filter needs one value")
-        if selection.operator == "in" and not selection.values:
-            raise ValueError("Plot in filter needs values")
-        if selection.operator == "is_null" and selection.values:
-            raise ValueError("Plot is_null filter takes no values")
-
-
-def filter_frame(frame: pd.DataFrame, filters: list[ResultFilter]) -> pd.DataFrame:
-    for selection in filters:
-        if selection.field not in frame.columns:
-            raise ValueError(f"Plot filter references missing result column: {selection.field}")
-        series = frame[selection.field]
-        if selection.operator == "eq":
-            if len(selection.values) != 1:
-                raise ValueError("Plot eq filter needs one value")
-            frame = frame.loc[series == selection.values[0]]
-        elif selection.operator == "in":
-            if not selection.values:
-                raise ValueError("Plot in filter needs values")
-            frame = frame.loc[series.isin(selection.values)]
-        else:
-            if selection.values:
-                raise ValueError("Plot is_null filter takes no values")
-            frame = frame.loc[series.isna()]
-    return frame
-
-
-def render_plot(frame: pd.DataFrame, plot: PlotSpec, title: str):
-    """Use only the executed DataFrame as Plotly's data source."""
-    validate_plot_arguments(plot)
-    frame = filter_frame(frame, plot.filters)
-    if plot.function == "imshow":
-        if plot.columns:
-            raise ValueError("imshow uses the full DataFrame without column arguments")
-        return px.imshow(frame, title=title, **plot.options)
-    function = getattr(px, plot.function, None)
-    if not callable(function):
-        raise ValueError(f"Unknown Plotly Express function: {plot.function}")
-    parameters = inspect.signature(function).parameters
-    if "data_frame" not in parameters or "title" not in parameters:
-        raise ValueError(f"Unsupported Plotly Express function: {plot.function}")
-    for argument, value in plot.columns.items():
-        if argument not in PLOTLY_COLUMN_ARGUMENTS or argument not in parameters:
-            raise ValueError(f"Unsupported plot column argument: {argument}")
-        names = value if isinstance(value, list) else [value]
-        if not names or any(name not in frame.columns for name in names):
-            raise ValueError(
-                f"Plot references a missing result column: {argument}={value}"
-            )
-    return function(frame, title=title, **plot.columns, **plot.options)
 
 
 def result_metrics(

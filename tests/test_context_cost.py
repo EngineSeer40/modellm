@@ -14,8 +14,13 @@ from strands.hooks.events import AfterToolCallEvent
 from strands.models import Model
 from strands.types.tools import ToolContext
 
-from src import agents
-from src.analysis import accept_analyses, render_plot, validate_plot_arguments
+from src import agents, agent_runtime
+from src.analysis import (
+    accept_analyses,
+)
+from src.visualisation import (
+    render_plot, validate_plot_arguments,
+)
 from src.context_cost import COST_EXPERIMENT_STAGES, configured_cost_experiments, tool_result_offload_plugins
 from src.core.contracts import (
     AcceptedAnalysisResult, AnalysisFinding, AnalysisPlan, AnalysisSpec, AnalyticalPlan,
@@ -292,7 +297,7 @@ def test_invoke_records_controls_cache_boundary_and_plugins(monkeypatch, tmp_pat
     for controls in (frozenset(), frozenset({"conceptual_cache"})):
         events = []
         prompt = [{"text": "stable"}, {"text": "repair"}]
-        agents.invoke(prompt, Response, "conceptual modelling", lambda *e: events.append(e), "system",
+        agent_runtime.invoke(prompt, Response, "conceptual modelling", lambda *e: events.append(e), "system",
                       cost_experiments=controls)
         assert ("cache_config" in captured["model"]) == bool(controls)
         assert captured["prompt"] == (prompt[:1] + [{"cachePoint": {"type": "default"}}] + prompt[1:] if controls else prompt)
@@ -302,14 +307,14 @@ def test_invoke_records_controls_cache_boundary_and_plugins(monkeypatch, tmp_pat
                 assert e[3]["cost_experiments"] == sorted(controls)
                 assert e[3]["strands_version"]
     # Existing stages keep caching when all experiments are disabled.
-    agents.invoke("prompt", Response, "analytical interpretation", lambda *a: None, "system", cost_experiments=frozenset())
+    agent_runtime.invoke("prompt", Response, "analytical interpretation", lambda *a: None, "system", cost_experiments=frozenset())
     assert "cache_config" in captured["model"]
-    agents.invoke("prompt", Response, "analytical interpretation", lambda *a: None, "system",
+    agent_runtime.invoke("prompt", Response, "analytical interpretation", lambda *a: None, "system",
                   cost_experiments=frozenset({"offload_analysis"}), context_directory=tmp_path / "context")
     assert len(captured["agent"]["plugins"]) == 1
     # Use a provider ID without a Claude marker to verify the cache support guard.
     monkeypatch.setenv("MODELLM_BEDROCK_MODEL_ID", "test.provider")
-    agents.invoke("prompt", Response, "conceptual modelling", lambda *a: None, "system",
+    agent_runtime.invoke("prompt", Response, "conceptual modelling", lambda *a: None, "system",
                   cost_experiments=frozenset({"conceptual_cache"}))
     assert "cache_config" not in captured["model"]
 
