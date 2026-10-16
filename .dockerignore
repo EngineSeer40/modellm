@@ -6,7 +6,12 @@
 !src/
 !src/**
 !samples/
-!samples/**
+!samples/sample_questions.py
+!samples/customer_records.csv
+!samples/store_locations.csv
+!samples/transactions_instore.csv
+!samples/transactions_online.csv
+!samples/invoices.json
 !.streamlit/
 !.streamlit/config.toml
 **/__pycache__/

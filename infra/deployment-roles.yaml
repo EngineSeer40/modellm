@@ -148,16 +148,23 @@ Resources:
                 Action:
                   - ecs:CreateCluster
                   - ecs:DeleteCluster
+                  - ecs:UpdateCluster
+                  - ecs:UpdateClusterSettings
                   - ecs:CreateService
                   - ecs:UpdateService
                   - ecs:DeleteService
                   - ecs:DeregisterTaskDefinition
                   - ecs:DeleteTaskDefinitions
+                  # Current CloudFormation service handlers inspect deployment progress.
+                  - ecs:DescribeServiceDeployments
+                  - ecs:ListServiceDeployments
+                  - ecs:StopServiceDeployment
                   - ecs:TagResource
                   - ecs:UntagResource
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ApplicationStackName}-Cluster-*'
                   - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ApplicationStackName}-Cluster-*/*'
+                  - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service-deployment/${ApplicationStackName}-Cluster-*/*/*'
                   - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${ApplicationStackName}-TaskDefinition-*:*'
               - Effect: Allow
                 Action: [ecs:RegisterTaskDefinition, ecs:DescribeClusters, ecs:DescribeServices, ecs:DescribeTaskDefinition, ecs:ListTagsForResource]
@@ -199,6 +206,8 @@ Resources:
                   - ec2:RevokeSecurityGroupIngress
                   - ec2:AuthorizeSecurityGroupEgress
                   - ec2:RevokeSecurityGroupEgress
+                  - ec2:UpdateSecurityGroupRuleDescriptionsIngress
+                  - ec2:UpdateSecurityGroupRuleDescriptionsEgress
                   - ec2:CreateTags
                   - ec2:DeleteTags
                 Resource:
@@ -209,15 +218,31 @@ Resources:
                   ArnEqualsIfExists:
                     ec2:Vpc: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${VpcId}'
               - Effect: Allow
-                Action: [ec2:DescribeVpcs, ec2:DescribeSubnets, ec2:DescribeSecurityGroups, ec2:DescribeNetworkInterfaces, ec2:DescribeAccountAttributes]
+                # VPC reads used by ELB provisioning, based on AWS's ELB managed policy.
+                # Keep these together: ELB checks more than just subnets/security groups.
+                Action:
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:GetSecurityGroupsForVpc
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeAccountAttributes
+                  - ec2:DescribeInternetGateways
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeInstances
+                  - ec2:DescribeRouteTables
+                  - ec2:DescribeVpcPeeringConnections
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeIpamPools
                 Resource: '*'
                 Condition:
                   StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}
               - Effect: Allow
-                Action: [logs:CreateLogGroup, logs:DeleteLogGroup, logs:PutRetentionPolicy, logs:DeleteRetentionPolicy, logs:TagLogGroup, logs:UntagLogGroup, logs:ListTagsLogGroup, logs:TagResource, logs:UntagResource, logs:ListTagsForResource]
+                Action: [logs:CreateLogGroup, logs:DeleteLogGroup, logs:PutRetentionPolicy, logs:DeleteRetentionPolicy, logs:TagLogGroup, logs:UntagLogGroup, logs:ListTagsLogGroup, logs:TagResource, logs:UntagResource, logs:ListTagsForResource, logs:GetDataProtectionPolicy]
                 Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApplicationStackName}-Logs-*'
               - Effect: Allow
-                Action: logs:DescribeLogGroups
+                # Read checks declared by the current CloudFormation log-group schema.
+                Action: [logs:DescribeLogGroups, logs:DescribeIndexPolicies, logs:DescribeResourcePolicies]
                 Resource: '*'
                 Condition:
                   StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}

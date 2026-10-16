@@ -41,6 +41,27 @@ This uses the existing AWS credentials and bills through AWS. Mistral Large 3 su
 
 ## Workflow and outputs
 
+### Reopen a saved dashboard without model calls
+
+Pass a finished run directory (or its `result.json`) after Streamlit's `--` separator:
+
+```sh
+uv run --frozen streamlit run app.py --server.address=127.0.0.1 --server.port=8502 \
+  --server.fileWatcherType=auto --server.runOnSave=true \
+  -- --saved-run saved_runs/261016_1124_f9d6736b5b6b
+```
+
+Open `http://localhost:8502`. This opens Results and retains the charts, findings, database previews, data model,
+usage and diagnostics. The Run tab shows the recorded question and execution history;
+starting another run is disabled. No model credentials are needed for this mode.
+Use it locally with trusted saved runs: the selected dashboard is shared by visitors
+to that app process.
+
+Preserve the whole run folder, including its database and chart JSON files, under
+`saved_runs/` before normal run retention removes it. That folder is ignored by Git
+and is outside the application's default run cleanup. Opening a saved copy resolves
+its artifacts from that copy rather than the original location.
+
 Each run writes `runs/<YYMMDD_HHMM>_<12-hex-id>/modellm.duckdb`, a generated dbt project, dbt artifacts, Plotly figure JSON, and `result.json`. The UTC timestamp prefix makes run directories sort chronologically; the random suffix keeps runs unique. `raw` tables retain the ingested source rows; dbt materializes models into `main`. Contract version 4 declares processes, dimensions and facts directly on the plan, with each output defined once and optional additivity on that output. Matching uses declared field values and equality pairs; normalization belongs in output definitions. Source references and planned dependencies are checked against this run. Repairs receive the rejected proposal and actual errors: one conceptual revision, two dbt repairs, one analysis correction and one finding correction. Valid empty results are retained. Plot filters must match the supplied presentation selection. A failed boundary prevents dashboard completion.
 
 Findings cite evidence registered from an accepted DuckDB result, using stable evidence/row IDs. They do not rerun a final list of evidence queries. The dashboard displays supporting evidence and methodology separately, and groups related chart representations by analytical concept. Run traces preserve conceptual proposals, dbt proposal files, accepted SQL, evidence, model call IDs, internal model cycles, and transport failures. Historical plans remain trace artifacts; they are not silently migrated into the new contract.

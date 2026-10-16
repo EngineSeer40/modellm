@@ -225,16 +225,17 @@ def test_ingest_rejects_source_shape_before_profiling(tmp_path):
         assert con.execute("SELECT count(*) FROM raw.accounts").fetchone()[0] == 2
 
 
-@pytest.mark.parametrize(("access_code", "configured"), [
-    ("", False), ("1234567", False), ("testcode", True),
-    ("a-strong-synthetic-code-for-tests", True),
+@pytest.mark.parametrize(("live_enabled", "access_code", "configured"), [
+    ("false", "testcode", False),
+    ("true", "", False), ("true", "1234567", False), ("true", "testcode", True),
+    ("true", "a-longer-access-code-for-tests", True),
 ])
-def test_public_example_and_gate_preserve_ui_surfaces(tmp_path, monkeypatch, access_code, configured):
+def test_live_access_requires_enabled_runs_and_configured_code(tmp_path, monkeypatch, live_enabled, access_code, configured):
     from streamlit.testing.v1 import AppTest
     from src.ui.app import run_manager
     monkeypatch.setenv("MODELLM_PROD", "true")
     monkeypatch.setenv("MODELLM_RUNS_ROOT", str(tmp_path / "runs"))
-    monkeypatch.setenv("MODELLM_LIVE_ENABLED", "true")
+    monkeypatch.setenv("MODELLM_LIVE_ENABLED", live_enabled)
     monkeypatch.setenv("MODELLM_LIVE_ACCESS_CODE", access_code)
     run_manager.clear()
     app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py").run(timeout=15)
@@ -242,16 +243,70 @@ def test_public_example_and_gate_preserve_ui_surfaces(tmp_path, monkeypatch, acc
         assert not app.exception
         assert [tab.label for tab in app.tabs] == ["Run", "Results", "Data Model", "Technical Details"]
         assert not app.get("file_uploader")
-        app.button[0].click().run(timeout=15)
-        assert not app.exception
-        assert app.session_state["result"]["run_id"] == "synthetic_example"
-        assert not app.get("file_uploader")
+        assert "result" not in app.session_state
+        assert not any("example" in button.label.lower() for button in app.button)
         if not configured:
             assert not app.text_input
             return
+        app.text_input[0].set_value("incorrect-code")
+        next(button for button in app.button if button.label == "Unlock live runs").click().run(timeout=15)
+        assert not app.exception and not app.get("file_uploader")
+        assert any("not accepted" in error.value for error in app.error)
+        app.session_state["_access_retry_at"] = 0
         app.text_input[0].set_value(access_code)
         next(button for button in app.button if button.label == "Unlock live runs").click().run(timeout=15)
         assert not app.exception and app.get("file_uploader")
+    finally:
+        run_manager().shutdown()
+        run_manager.clear()
+
+
+def test_demo_inputs_fill_editable_draft_and_use_normal_submission(tmp_path, monkeypatch):
+    from io import BytesIO
+    from streamlit.testing.v1 import AppTest
+    from samples.sample_questions import SAMPLE_1, SAMPLE_1_FILES
+    from src.ui.app import run_manager
+
+    monkeypatch.setenv("MODELLM_PROD", "false")
+    monkeypatch.setenv("MODELLM_LIVE_ENABLED", "true")
+    monkeypatch.setenv("MODELLM_RUNS_ROOT", str(tmp_path / "runs"))
+    submissions = []
+
+    def capture_submission(self, uploads, request, owner):
+        submissions.append((uploads, request))
+        raise ValueError("Submission captured without running a model")
+
+    monkeypatch.setattr(RunManager, "submit", capture_submission)
+    run_manager.clear()
+    root = Path(__file__).resolve().parents[1]
+    app = AppTest.from_file(root / "app.py").run(timeout=15)
+    try:
+        next(b for b in app.button if b.label == "Insert Demo Data").click().run(timeout=15)
+        assert not app.exception and not submissions
+        assert app.text_area[0].value == SAMPLE_1.strip()
+        assert app.get("file_uploader")
+        assert app.session_state["_upload_version"] == 1
+        assert "_pending_demo_uploads" not in app.session_state
+        assert not any(str(button.key).startswith("remove_demo_") for button in app.button)
+        # AppTest cannot execute browser JavaScript. Supply the files returned by
+        # the native uploader after selection/removal; the bridge is browser-tested.
+        selected = []
+        for name in SAMPLE_1_FILES:
+            if name != "invoices.json":
+                file = BytesIO((root / "samples" / name).read_bytes())
+                file.name = name
+                selected.append(file)
+        monkeypatch.setattr("src.ui.app.st.file_uploader", lambda *args, **kwargs: selected)
+        app.run(timeout=15)
+        app.text_area[0].set_value("My edited question").run(timeout=15)
+        next(b for b in app.button if b.label == "Start Modelling").click().run(timeout=15)
+        assert not app.exception
+        uploads, request = submissions[0]
+        assert request == "My edited question"
+        assert dict(uploads) == {
+            name: (root / "samples" / name).read_bytes()
+            for name in SAMPLE_1_FILES if name != "invoices.json"
+        }
     finally:
         run_manager().shutdown()
         run_manager.clear()
