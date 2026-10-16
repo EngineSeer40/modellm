@@ -7,9 +7,10 @@ from pathlib import Path
 from .config import ReleaseSettings
 from .workflow import run
 from .workspace import RunWorkspace
+from .telemetry import flush_telemetry
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", required=True, type=Path)
     args = parser.parse_args()
@@ -20,7 +21,11 @@ def main():
     paths = [Path(path) for path in request["paths"]]
     if any(path.is_symlink() or path.resolve().parent != workspace.input_dir for path in paths):
         raise ValueError("Worker inputs must belong to its workspace")
-    run(paths, request["request"], workspace.root, workspace=workspace, settings=settings)
+    # Future cloud exporter/provider setup belongs here, once per worker.
+    try:
+        run(paths, request["request"], workspace.root, workspace=workspace, settings=settings)
+    finally:
+        flush_telemetry()
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from src import agents
+from src import agent_runtime as agents
 
 
 class Response(BaseModel):

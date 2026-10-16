@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ReleaseSettings, check_limit
+from .run import RunJob, RunRecord, RunState
 from .storage import artifact_bytes, cleanup_run_workspaces
 from .usage import estimate_usage_cost, summarize_usage
 from .workspace import RunWorkspace, atomic_json, validate_submission
@@ -140,7 +141,7 @@ class RunManager:
             with self.lock:
                 self._cleanup()
 
-    def submit(self, uploads, request, owner):
+    def submit(self, uploads: list[tuple[str, bytes]], request: str, owner: str) -> RunJob:
         validate_submission(uploads, request, self.settings)
         with self.lock:
             if self.closed.is_set() or not self.settings.live_enabled:
@@ -179,7 +180,7 @@ class RunManager:
                 self.last_submission = {key: value for key, value in self.last_submission.items()
                                         if cooldown and now - value < cooldown}
                 self.last_submission[owner] = now
-                future = Future()
+                future: Future[RunState] = Future()
                 future.set_running_or_notify_cancel()
                 def supervise():
                     try:
@@ -194,7 +195,7 @@ class RunManager:
                 workspace.remove_inputs()
                 raise
 
-    def _supervise(self, workspace):
+    def _supervise(self, workspace: RunWorkspace) -> RunState:
         try:
             return self._execute_worker(workspace)
         finally:
@@ -203,7 +204,7 @@ class RunManager:
                 self.active = self.process = None
                 self._cleanup()
 
-    def _execute_worker(self, workspace):
+    def _execute_worker(self, workspace: RunWorkspace) -> RunState:
         reason = None
         process = None
         try:
@@ -241,13 +242,13 @@ class RunManager:
         except (OSError, ValueError):
             state = {"run_id": workspace.run_id, "run_dir": str(workspace.run_dir), "events": []}
         if reason or state.get("status") not in {"complete", "failed"}:
-            state.update(status="failed", error=reason or "Worker produced no terminal result", failure_category="worker")
-            state.setdefault("events", []).append({"time": datetime.now(timezone.utc).isoformat(),
-                "stage": "dashboard completion", "kind": "failure", "message": state["error"]})
+            record = RunRecord(workspace, state)
+            state["failure_category"] = "worker"
+            record.fail(reason or "Worker produced no terminal result")
             state["usage"] = summarize_usage(state["events"])
             if state["usage"]["total"]["usage_status"] == "reported":
                 state["usage"]["total"]["usage_status"] = "partial"
-            atomic_json(workspace.result_path, state)
+            record.save()
         return state
 
     def shutdown(self):

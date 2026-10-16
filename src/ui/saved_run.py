@@ -3,8 +3,10 @@
 import json
 from pathlib import Path
 
+from src.run import RunState
 
-def load_saved_run(path):
+
+def load_saved_run(path: str | Path) -> RunState:
     path = Path(path).expanduser().resolve()
     if path.is_dir():
         path = path / "result.json"

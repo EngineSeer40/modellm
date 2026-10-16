@@ -12,6 +12,7 @@ import streamlit as st
 
 from samples.sample_questions import SAMPLE_1, SAMPLE_1_FILES
 
+from src.run import RunState
 from src.config import ReleaseSettings
 from src.execution import RunManager
 
@@ -128,7 +129,7 @@ def _populate_demo_uploads(uploader_key):
     </script>''', unsafe_allow_javascript=True)
 
 
-def render_run(state, *, saved=False):
+def render_run(state: RunState | None, *, saved=False):
     if saved:
         st.header("Business question")
         st.write(state.get("request", ""))

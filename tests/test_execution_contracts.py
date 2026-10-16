@@ -2,8 +2,21 @@
 from pathlib import Path
 import duckdb
 import pytest
-from src.analysis import AnalysisAcceptanceError, accept_analyses, render_plot, validate_built_models, validate_plot_spec
-from src.core.contracts import AcceptedAnalysisResult, AnalysisDimension, AnalysisFinding, AnalysisMeasure, AnalysisPlan, AnalysisSpec, AnalyticalPlan, BusinessProcessPlan, DimensionPlan, EvidenceAggregate, FactDimensionLink, FactPlan, FindingStatement, PlotSpec, RatioComponents, ResultFilter, SharedQualification, SourceMatchPath, plan_issues, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell
+from src.analysis import (
+    AnalysisAcceptanceError, accept_analyses,
+)
+from src.visualisation import (
+    render_plot, validate_plot_spec,
+)
+from src.modelling_validation import (
+    validate_built_models,
+)
+from src.core.contracts import (
+    AcceptedAnalysisResult, AnalysisDimension, AnalysisFinding, AnalysisMeasure, AnalysisPlan, AnalysisSpec, AnalyticalPlan, BusinessProcessPlan, DimensionPlan, EvidenceAggregate, FactDimensionLink, FactPlan, FindingStatement, PlotSpec, RatioComponents, ResultFilter, SharedQualification, SourceMatchPath, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell,
+)
+from src.modelling_validation import (
+    plan_issues,
+)
 from src.tools.result_tools import DuckDBResultTools, EvidenceRegistry, render_finding
 
 def source_plan() -> AnalyticalPlan:

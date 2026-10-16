@@ -2,7 +2,9 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 import pytest
-from src.analysis import render_plot
+from src.visualisation import (
+    render_plot,
+)
 from src.core.contracts import PlotSpec, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell
 from src.tools.analysis_tools import execute_analysis_sql
 

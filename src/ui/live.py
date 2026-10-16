@@ -5,6 +5,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from src.run import RunProgress, RunState
+
 from .progress import STAGE_PHASE, project_progress
 
 
@@ -123,7 +125,7 @@ def _dbt(state, events):
                     st.code(file.get("content", ""), language="sql")
 
 
-def render_timeline(state):
+def render_timeline(state: RunState | RunProgress):
     events = state.get("events", [])
     phases = project_progress(events, state.get("status", "running"))
     for index, phase in enumerate(phases):

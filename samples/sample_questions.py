@@ -17,9 +17,6 @@ Prefer one coherent visualisation rather than splitting each dimension into a se
 
 SAMPLE_1 = """
 
-Build a cross-channel customer and commercial performance model that reconciles customer behaviour, store performance and finance invoicing.
-Use the operational transaction sources for purchase behaviour and the invoice source as a separate finance fact. Do not double-count invoices as additional purchases simply because they overlap with operational orders.
-
 Produce at least the following analytical concepts:
 
 1. Store performance map
@@ -37,16 +34,10 @@ Preserve store latitude/longitude and region so the plotting stage can produce a
 
 Using the Level 2 churn definition, show churn rate across age group × current subscription level. Preserve gender if it remains analytically useful, but do not create separate charts purely because gender exists. Show me this in a color coded heat map.
 
-3. Cross-channel customer mix
+3. Customer churn across time
 
-Classify identified customers into a mutually exclusive current-period behaviour group such as:
-
-online only;
-store only;
-omnichannel;
-no qualifying purchase in the recent period.
-Use a 180-day recent-period window ending 2026-09-30.
-
-Return customer counts and share-of-known-customer population. I want to see as many of these measures together in a series of sub plots.
+I want to understand customer churn each month and whether promotions are actually helping across our online and store sales.
+Treat someone as churned if they have made at least two completed purchases across either online or store sales, then go 60 days without another completed purchase. 
+Calculate the monthly churn across time for online and offline customers and show it on a line graph.
 
 """

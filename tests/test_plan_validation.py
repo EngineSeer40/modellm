@@ -1,4 +1,9 @@
-from src.core.contracts import AnalyticalPlan, BusinessProcessPlan, FactPlan, plan_issues, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell
+from src.core.contracts import (
+    AnalyticalPlan, BusinessProcessPlan, FactPlan, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell,
+)
+from src.modelling_validation import (
+    plan_issues,
+)
 
 def test_plan_links_are_checked_before_dbt():
     plan = AnalyticalPlan(assumptions=[], unresolved_questions=[], business_processes=[BusinessProcessPlan(name='event_occurrence', description='Recorded events')], dimensions=[], facts=[FactPlan(name='fact_events', business_process='event_occurrence', fact_type='transaction', grain='one row per event', source_datasets=['events'], output_fields=[ModelOutput(name='event_count', description='One per event', additivity='additive', definition=FieldDefinition(kind='constant', inputs=[], explanation='constant 1', value=1))], modelling_rationale='Reusable recorded observations at the declared grain', dimension_links=[], grain_key_fields=[])])

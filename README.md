@@ -1,94 +1,175 @@
-# ModelLM discovery spike
+# ModeLLM
 
-This prototype loads 2–6 uploaded CSV, Parquet, JSON, JSON Lines or NDJSON files into DuckDB, profiles them, uses Strands agents on Amazon Bedrock to plan and build a dimensional model with dbt, and renders accepted analytical results as a Plotly dashboard. All modelling, analysis and plotting decisions use agents.
+ModeLLM turns related datasets and a business question into a dimensional data model and an analytical dashboard. It uses Amazon Bedrock agents to plan the model, generate and validate dbt models in DuckDB, analyse the resulting data, and select Plotly visualisations. Streamlit provides the interface.
 
-## Setup
+## Get running locally
 
-Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required. From this directory:
+Use Linux, macOS or WSL, Python 3.12+, and [uv](https://docs.astral.sh/uv/). Run these commands from the repository root.
+
+### 1. Install the dependencies
 
 ```sh
-uv sync --extra dev
-uv run pytest
-uv run streamlit run app.py
+uv sync --frozen --extra dev
 ```
 
-Configure AWS credentials and a region that can invoke the selected Bedrock model. The default is the AU Claude Haiku 4.5 inference profile; set `MODELLM_BEDROCK_MODEL_ID` to override it. Enter a business request and upload 2–6 related datasets in Run. Technical Details records the actual model used by each agent.
+### 2. Configure AWS and the application
 
-For the current trial, Plotting is hardcoded to `au.anthropic.claude-haiku-4-5-20251001-v1:0`, including when `MODELLM_BEDROCK_MODEL_ID` selects Sonnet or another model. All other stages use the configured model. Per-agent usage in Technical Details displays the actual model used.
+Use your normal AWS credential setup, such as an existing named profile. The application uses the AWS SDK credential chain; it does not require a separate Anthropic API key. Your identity must have access to both configured Bedrock models, including permission for streaming inference. See the [AWS inference prerequisites](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-prereq.html).
 
-JSON uploads can contain an array of records, one record object, or newline-delimited records (`.jsonl`/`.ndjson`). Nested fields remain nested DuckDB columns. A single object wrapping a record array (for example, `{"data": [{...}]}`) is rejected with an explanation because it would otherwise appear as one source row; upload the inner array or JSON Lines instead.
+Create a local `.env` file with these settings:
 
-For example, in a shell with an AWS profile configured:
-
-```sh
-export AWS_PROFILE=your-profile
-export AWS_DEFAULT_REGION=ap-southeast-2
-export MODELLM_BEDROCK_MODEL_ID=au.anthropic.claude-haiku-4-5-20251001-v1:0
-uv run streamlit run app.py
+```dotenv
+AWS_REGION=ap-southeast-2
+MODELLM_PROD=false
+MODELLM_LIVE_ENABLED=true
+MODELLM_BEDROCK_MODEL_ID=au.anthropic.claude-sonnet-4-6
+MODELLM_PLOTTING_MODEL_ID=au.anthropic.claude-haiku-4-5-20251001-v1:0
+# If you use a named AWS profile, uncomment and replace this placeholder:
+# AWS_PROFILE=your-profile-name
 ```
 
-Bedrock calls use a 3600-second read timeout. To try Nova 2 Lite from Sydney, set `MODELLM_BEDROCK_MODEL_ID=global.amazon.nova-2-lite-v1:0`; this uses global routing. Nova 2 Lite calls enable extended reasoning at low effort. Nova currently redacts its reasoning text; Technical Details retains this status, any provider-visible reasoning, and recorded agent output. Streamed output is saved in `result.json`, including partial output before a failure.
+Main stages default to **Sonnet 4.6**; plotting defaults to **Haiku 4.5**. Both can be overridden independently. Region and inference-profile availability must match for both models. Technical Details records the model actually used by each agent.
 
-To try Mistral Large 3 through Bedrock in Sydney:
+Local development bypasses the access-code gate. Production admission limits are off unless explicitly configured; DuckDB resource and workspace limits still apply. Live model runs incur AWS charges.
+
+### 3. Start the app
 
 ```sh
-AWS_DEFAULT_REGION=ap-southeast-2 \
-MODELLM_BEDROCK_MODEL_ID=mistral.mistral-large-3-675b-instruct \
-uv run streamlit run app.py
+uv run --env-file .env --frozen streamlit run app.py --server.address=127.0.0.1
 ```
 
-This uses the existing AWS credentials and bills through AWS. Mistral Large 3 supports Converse, streaming and structured outputs, with a 256K context window and 32K maximum output according to [AWS model documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-mistral-ai-mistral-large-3.html). New calls record the actual AWS region. Sydney standard list-price estimates use $0.515 input and $1.545 output per million tokens; unknown regions and cache pricing remain unavailable. No separate Mistral API key is needed.
+Open **http://localhost:8501**. The command explicitly [loads `.env` through uv](https://docs.astral.sh/uv/configuration/files/); running Streamlit alone does not load it automatically. Restart after changing environment settings.
 
-## Workflow and outputs
-
-### Reopen a saved dashboard without model calls
-
-Pass a finished run directory (or its `result.json`) after Streamlit's `--` separator:
+To see UI code changes without building a container, add the watcher options:
 
 ```sh
-uv run --frozen streamlit run app.py --server.address=127.0.0.1 --server.port=8502 \
+uv run --env-file .env --frozen streamlit run app.py \
+  --server.address=127.0.0.1 \
+  --server.fileWatcherType=auto --server.runOnSave=true
+```
+
+### 4. Run an analysis
+
+In **Run**, upload **2–6 related datasets** and describe what you want to understand. Alternatively, select **Insert Demo Data** to load the bundled `SAMPLE_1` files and question from [samples/](samples/). You can edit the question and remove files before submission. Inserting demo data does not invoke a model; **Start Modelling** does.
+
+Supported formats are CSV, Parquet, JSON, JSON Lines and NDJSON. JSON can contain an array of records, one record object, or newline-delimited records. Nested fields remain nested DuckDB columns. A wrapper such as `{"data": [...]}` is rejected; upload the inner array instead.
+
+Completed runs open **Results**, with charts, findings, supporting evidence and usage. **Data Model** shows the model diagram and table previews. **Technical Details** contains stage diagnostics, dbt results, repairs and recorded model output. Inputs remain available when switching tabs within the same browser session; sessions do not survive a server restart.
+
+## Reopen a saved dashboard without model calls
+
+Preserve the **whole finished run directory**, including its database, `result.json` and chart files. With the default local runs folder, replace `YOUR_RUN_ID` below with the directory name you want to keep:
+
+```sh
+mkdir -p saved_runs
+cp -R runs/YOUR_RUN_ID saved_runs/YOUR_RUN_ID
+```
+
+If you configured another `MODELLM_RUNS_ROOT`, copy from that folder instead. Make the copy before normal retention removes the run.
+
+Open the saved copy with:
+
+```sh
+uv run --frozen streamlit run app.py \
+  --server.address=127.0.0.1 --server.port=8502 \
   --server.fileWatcherType=auto --server.runOnSave=true \
-  -- --saved-run saved_runs/261016_1124_f9d6736b5b6b
+  -- --saved-run saved_runs/YOUR_RUN_ID
 ```
 
-Open `http://localhost:8502`. This opens Results and retains the charts, findings, database previews, data model,
-usage and diagnostics. The Run tab shows the recorded question and execution history;
-starting another run is disabled. No model credentials are needed for this mode.
-Use it locally with trusted saved runs: the selected dashboard is shared by visitors
-to that app process.
+Visit **http://localhost:8502**. All four tabs remain available, using the copied charts, findings, database and diagnostics. The Run tab shows execution history and cannot start another workflow. No AWS credentials are needed. You can also pass the path to the saved `result.json`.
 
-Preserve the whole run folder, including its database and chart JSON files, under
-`saved_runs/` before normal run retention removes it. That folder is ignored by Git
-and is outside the application's default run cleanup. Opening a saved copy resolves
-its artifacts from that copy rather than the original location.
+This mode opens an operator-selected local file, without the live-run access gate. Keep it bound to localhost and use trusted run folders: anyone who can reach that app process can view the selected dashboard. `saved_runs/` is ignored by Git and sits outside default run cleanup; keep it outside any custom runs root too.
 
-Each run writes `runs/<YYMMDD_HHMM>_<12-hex-id>/modellm.duckdb`, a generated dbt project, dbt artifacts, Plotly figure JSON, and `result.json`. The UTC timestamp prefix makes run directories sort chronologically; the random suffix keeps runs unique. `raw` tables retain the ingested source rows; dbt materializes models into `main`. Contract version 4 declares processes, dimensions and facts directly on the plan, with each output defined once and optional additivity on that output. Matching uses declared field values and equality pairs; normalization belongs in output definitions. Source references and planned dependencies are checked against this run. Repairs receive the rejected proposal and actual errors: one conceptual revision, two dbt repairs, one analysis correction and one finding correction. Valid empty results are retained. Plot filters must match the supplied presentation selection. A failed boundary prevents dashboard completion.
+## Test production settings locally
 
-Findings cite evidence registered from an accepted DuckDB result, using stable evidence/row IDs. They do not rerun a final list of evidence queries. The dashboard displays supporting evidence and methodology separately, and groups related chart representations by analytical concept. Run traces preserve conceptual proposals, dbt proposal files, accepted SQL, evidence, model call IDs, internal model cycles, and transport failures. Historical plans remain trace artifacts; they are not silently migrated into the new contract.
+In your private `.env`, change or add:
 
-At the start of each workflow, old per-run DuckDB databases and WAL files are removed after 14 days. If retained run databases exceed 2 GiB, the oldest completed or failed databases are removed until usage is under budget. Active runs are preserved; abandoned runs still marked `running` are expired after 24 hours. `MODELLM_DUCKDB_RETENTION_DAYS` and `MODELLM_DUCKDB_BUDGET_BYTES` override these defaults. Run summaries, dbt logs and chart artifacts remain available after the database expires; raw and transformed table previews require the database.
+```dotenv
+MODELLM_PROD=true
+MODELLM_LIVE_ENABLED=true
+MODELLM_RUNS_ROOT=./runs/prod-local
+MODELLM_LIVE_ACCESS_CODE=REPLACE_WITH_YOUR_PRIVATE_ACCESS_CODE
+STREAMLIT_SERVER_MAX_UPLOAD_SIZE=20
+```
 
-The Streamlit UI lives under `src/ui/`; `app.py` composes it. Run stacks a larger business-request editor, a 420-pixel chronological stream that follows new output, and consolidated stage sections. The stream shows readable messages instead of raw JSON payloads; complete diagnostics remain in Technical Details. Modelling assumptions and repair details are hidden on Run, and interpretation shows finding headings. A toggle hides the stream; `MODELLM_SHOW_LIVE_STREAM=0` defaults it off. All tabs keep inputs mounted; a session-owned job and event queue preserve drafts, uploads and execution across tab navigation. This state is scoped to the browser session, not durable across new sessions or server restarts. Successful runs automatically open Results. Results displays usage, cost and duration openly, charts with a single heading, findings as up to ten bullets, evidence and methodology. Numeric presentation uses at most two decimal places without changing saved results. Data Model renders a scrollable SVG ERD with table cards, declared field connections and zoom controls; full schemas are optional and colours follow the active theme. Technical Details includes conceptual modelling, dbt logs, repair diagnostics, recorded agent messages and downloadable run diagnostics. Existing events and artifacts remain the interface; the UI does not decide modelling or analysis policy. The event callback remains the seam for later OTEL/Langfuse instrumentation.
+Replace the access-code placeholder with your own code of at least **8 characters**, then use the same local startup command. Production mode enables admission limits, deadlines and reported-cost limits. For example, defaults include 20 MiB per file, 60 MiB total uploads, 10 runs per day, a 30-minute run deadline and a $3 reported-cost limit per run. Cost limits use reported estimates and allow the current model response to finish; they are not an AWS billing cap.
 
-`runs/experiments/ledger.csv` records one row per run, with links, scenario/request grouping, outcome, duration, retries, tokens and estimated USD cost. `agent_usage.csv` breaks usage down by agent; `overview.md` provides a summary. New runs update the ledger at start and completion, including failures. Refresh saved records with `.venv/bin/python -m src.experiments runs`. Labels live in `scenarios.csv`; ledger notes survive refresh. Results and Technical Details display total and per-agent usage; Run retains the usage fallback for failures. Costs use verified standard provider list rates and are estimates of reported usage; unknown rates or caching details produce unavailable estimates. See `runs/experiments/README.md` for conventions and pricing sources.
+With `MODELLM_PROD=true`, live runs default to disabled unless `MODELLM_LIVE_ENABLED=true` is supplied. Setting live enabled to `false` disables new runs in either mode. For local development, restore `MODELLM_PROD=false`; any explicit numeric overrides still apply. The full settings and defaults are in [src/config.py](src/config.py).
 
-The analysis agent uses read-only DuckDB tools to inspect validated dbt models. Application code validates its final SQL, materializes each analytical result in DuckDB, checks declared result fields, and profiles the accepted result. The plotting agent receives result semantics and statistics and can inspect only the accepted result through scoped tools. Plotly rendering loads that result into a pandas DataFrame. The spike does not establish business correctness merely because dbt tests passed; review assumptions and data-quality warnings when interpreting a dashboard.
+## Deploy to ECS
 
-Plotting receives the installed Plotly template registry as `renderer_templates`. Unknown template names are rejected inside the structured-output tool loop so the agent can correct them before rendering; the renderer checks them again. Omit `template` to use Plotly's default.
+The container and CloudFormation templates deploy one Streamlit process on one ECS Fargate task behind an HTTPS application load balancer. Follow [infra/README.md](infra/README.md) for AWS prerequisites, IAM roles, GitHub configuration, container checks and release instructions. [infra/parameters.json.example](infra/parameters.json.example) contains placeholders for deployment parameters.
 
-Analysis, dbt, Finding and Plotting calls enable Strands automatic prompt caching for Anthropic Claude models, using the default five-minute lifetime for prompts, tools and conversation prefixes. Model call events record the configuration; `cache_usage` events report reads and writes. Usage panels and ledgers distinguish uncached input, cache reads and cache writes; input totals include all three. Known Claude prices include five-minute cache writes at 1.25 times the input rate and reads at 0.1 times the input rate. Unsupported cache prices remain unavailable. Cache hits and savings must be measured from provider responses.
+The existing **Deploy production** workflow runs after a PR from `dev` into `master` is merged, or manually from `master`. Its GitHub environments are `release-build` and `production`.
 
-Implementation follows Strands' [structured-output](https://strandsagents.com/docs/user-guide/sdk/agents/structured-output/) and [streaming](https://strandsagents.com/docs/user-guide/sdk/streaming/async-iterators/) APIs and dbt's [DuckDB profile](https://docs.getdbt.com/docs/local/connect-data-platform/duckdb-setup) and [source](https://docs.getdbt.com/docs/build/sources) conventions.
+ECS sets `MODELLM_PROD=true` in [infra/service.yaml](infra/service.yaml). To enable live runs, set `"LiveEnabled": "true"` inside the `CFN_PARAMETERS` variable in GitHub's **production** environment and run the deployment workflow. The access code comes from Secrets Manager, supplied through the existing `PreviewSecretArn` parameter; put no secret value in `CFN_PARAMETERS` or the image.
 
-Cost experiments are opt-in through `MODELLM_COST_EXPERIMENTS`, a comma-separated list. Unset it (or use an empty value) to retain the baseline behavior. Settings are captured once per run; `result.json` records them and the Strands version, and model-call events record the controls relevant to that stage. Unknown names are rejected before a run starts.
+ECS task storage, browser sessions and daily counters are ephemeral. Task replacement can interrupt runs and removes local artifacts. Preserve anything you need before deploying.
+
+## Outputs, retention and data handling
+
+Runs are stored under `runs/` locally, or the directory selected by `MODELLM_RUNS_ROOT` (`/data/runs` by default in production). Each run has a UTC timestamp and random ID, and contains:
+
+- `modellm.duckdb`: ingested `raw` tables, dbt models in `main`, and accepted analysis results.
+- `dbt/`: generated SQL, model definitions, validation artifacts and logs.
+- `chart_*.json`: saved Plotly charts.
+- `result.json`: status, request, findings, evidence, attempts, model events and usage.
+
+Copied upload files are deleted when execution finishes or fails. Source rows remain in DuckDB until the workspace is removed. Current cleanup removes **whole application-owned run folders**, normally after 24 hours or earlier when the 2 GiB workspace budget requires it. `MODELLM_RETENTION_SECONDS` and `MODELLM_WORKSPACE_BYTES` configure these limits. Active runs are protected; legacy folders without ownership markers count toward usage but are not automatically deleted. Retention is applied during application activity, not by a separate scheduled service.
+
+Treat run folders, saved dashboards and diagnostic downloads as private data. Model prompts and tool results can include source values and business questions sent to the configured Bedrock service. Deleting the original uploads does not remove these values from the database or diagnostics.
+
+Keep AWS credentials in your normal AWS credential setup or, for ECS, the task role. Keep the live access code in a private local environment or Secrets Manager. `.env`, `runs/` and `saved_runs/` are ignored by Git; the container build allowlist excludes local credentials and run artifacts. Review files before committing or sharing diagnostics.
+
+## Token costs and caching
+
+All six token-cost controls are **enabled by default**, independently of production mode. An explicit empty `MODELLM_COST_EXPERIMENTS=` disables them for A/B testing; a comma-separated list enables only the named controls. Unknown names are rejected before execution.
 
 | Control | Effect |
 |---|---|
-| `conceptual_guidance` | Adds explicit source-scope and matching-path instructions. |
-| `conceptual_cache` | Enables Claude caching for Conceptual, separating stable evidence from repair feedback. |
-| `early_finding_validation` | Checks placeholder/binding structure inside Strands' structured-output loop, while keeping final evidence acceptance checks. |
-| `small_analysis_previews` | Defaults Analysis previews to 20 rows; explicit limits up to 500 and complete accepted results remain supported. |
-| `offload_analysis` | Uses Strands `ContextOffloader` for large `query_data` outputs. |
-| `offload_finding` | Separately enables offloading for large `inspect_result` outputs. |
+| `conceptual_guidance` | Adds source-scope and matching-path guidance. |
+| `conceptual_cache` | Enables Conceptual caching and separates stable evidence from repair feedback. |
+| `early_finding_validation` | Validates finding placeholder/binding structure inside the SDK correction loop. |
+| `small_analysis_previews` | Defaults analysis previews to 20 rows; explicit limits up to 500 remain supported. |
+| `offload_analysis` | Uses the Strands context offloader for large analysis query outputs. |
+| `offload_finding` | Uses the same SDK offloader for large finding inspection outputs. |
 
-For example, start with `MODELLM_COST_EXPERIMENTS=conceptual_guidance,conceptual_cache,early_finding_validation,small_analysis_previews`. Add offloading controls independently for comparison. Offloading uses the SDK's 2,500-token threshold and 1,000-token preview, with retrieval enabled and originals retained under `runs/<run>/context/<call_id>/`. Evidence IDs and full registered records remain intact. It affects tool outputs within one invocation; it does not trim initial prompts or repair snapshots. Retrieval calls and cache writes can offset savings, so compare provider cost and completion quality across repeated runs with identical inputs/models, including failures and cold/warm cache behavior. See the [implementation plan](todo/20261015_token_cost_reduction_plan.md).
+Analysis, dbt, finding and plotting use automatic prompt caching for compatible Claude models; Conceptual caching is controlled above. Offloading retains full tool outputs in the run's `context/` directory and permits retrieval. These controls preserve full accepted results and evidence. Their configuration is captured per run for comparisons.
+
+Results and Technical Details display reported tokens, cache usage and estimated USD cost. Prices are maintained in [src/usage.py](src/usage.py); unknown rates are unavailable, and a configured cost guard rejects unpriced models. Adding a model ID does not establish Bedrock availability or account permission.
+
+The local experiment ledger is stored under the configured runs root in `experiments/`, with run-level and per-agent CSVs. To refresh it for the default local folder:
+
+```sh
+uv run --frozen python -m src.experiments runs
+```
+
+## Development and validation
+
+```sh
+uv run --frozen --extra dev pytest -q
+uv lock --check
+```
+
+Ordinary tests do not invoke Bedrock. Container smoke checks and CloudFormation lint commands are documented in [infra/README.md](infra/README.md).
+
+The main code boundaries are:
+
+| File | Responsibility |
+|---|---|
+| [src/config.py](src/config.py) | Immutable settings and existing environment-variable defaults |
+| [src/workspace.py](src/workspace.py) | Owned workspace paths and uploaded inputs |
+| [src/run.py](src/run.py) | Shared record types, event emission and atomic result persistence |
+| [src/execution.py](src/execution.py) | Admission, worker supervision and model-call budgets |
+| [src/workflow.py](src/workflow.py) | Explicit workflow stages and their individual repair loops |
+| [src/agents.py](src/agents.py) / [src/agent_runtime.py](src/agent_runtime.py) | Domain prompts and tools / Strands execution, caching and streaming |
+| [src/core/contracts.py](src/core/contracts.py) | Agent output schemas and validation used by SDK correction loops |
+| [src/modelling_validation.py](src/modelling_validation.py) / [src/sql_policy.py](src/sql_policy.py) | Evidence-dependent model checks / shared SQL and generated dbt policy |
+| [src/analysis.py](src/analysis.py) / [src/visualisation.py](src/visualisation.py) | Accepted results / supported visual encodings and rendering |
+| [src/ui/](src/ui/) | Streamlit composition and presentation, including saved-run replay |
+
+Run state remains a dictionary on disk. `RunRecord` owns saving and events without changing existing JSON keys, status values or artifacts. Stateless policy checks remain functions, and repair loops stay with their stages.
+
+[src/telemetry.py](src/telemetry.py) adds workflow and stage/attempt spans around native Strands tracing, with run and model-call correlation. Without a configured OpenTelemetry provider, tracing is a no-op. No cloud exporter or Langfuse credentials are configured by the application. A future exporter should initialise once in the worker process and use its bounded flush on normal exit; forced termination can lose final spans. Saved-dashboard mode starts no workflow traces. Cloud export and prompt/tool-content capture require a separate configuration step.
+
+Analysis executes against validated dbt models; findings cite registered evidence from accepted results. Plotting reads accepted results and does not choose a new business aggregation. Successful execution and passing dbt tests do not establish business correctness: review the assumptions, methodology and data-quality warnings for each run.

@@ -7,6 +7,7 @@ import duckdb
 import plotly.io as pio
 import streamlit as st
 
+from src.run import RunState
 from src.data import preview
 from src.storage import DUCKDB_FILENAME
 from src.usage import summarize_usage
@@ -17,7 +18,7 @@ from .live import _conceptual
 from .presentation import concise_numbers, display_table, finding_bullets, format_chart
 
 
-def usage_for(state):
+def usage_for(state: RunState):
     return state.get("usage") or summarize_usage(state.get("events", []))
 
 
@@ -38,7 +39,7 @@ def render_progress(phases):
         st.caption(detail + repair_note)
 
 
-def render_outcome(state):
+def render_outcome(state: RunState):
     if state["status"] == "failed":
         st.error(failure_message(state))
         st.caption(f"Run ID: {state['run_id']} · Diagnostics are in Technical Details; usage is shown on Results.")
@@ -48,7 +49,7 @@ def render_outcome(state):
         st.info("This run has not completed.")
 
 
-def render_usage(state):
+def render_usage(state: RunState):
     usage = usage_for(state)
     total = usage["total"]
     st.subheader("Model usage and cost")
@@ -76,7 +77,7 @@ def render_usage(state):
                f"{usage['pricing_basis']}.")
 
 
-def render_results(state):
+def render_results(state: RunState | None):
     st.header("Results")
     if not state:
         st.info("Upload related datasets and describe your question in Run to create a dashboard.")
@@ -140,7 +141,7 @@ def _preview(database, schema, name):
         st.warning("This table is unavailable in the saved database. Its recorded schema and diagnostics are still available.")
 
 
-def render_data_model(state):
+def render_data_model(state: RunState | None):
     st.header("Data Model")
     if not state:
         st.info("Run an analysis to inspect its sources and resulting data model.")
@@ -213,7 +214,7 @@ def render_data_model(state):
                              hide_index=True, width="stretch")
 
 
-def render_technical(state):
+def render_technical(state: RunState | None):
     st.header("Technical Details")
     if not state:
         st.info("Run details and diagnostics appear here after execution.")

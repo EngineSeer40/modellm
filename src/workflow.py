@@ -3,25 +3,25 @@ from datetime import datetime, timezone
 from dataclasses import replace
 from importlib.metadata import version
 from pathlib import Path
-from threading import Lock
 from typing import Callable
+
+from .run import RunRecord, RunState
+from .telemetry import workflow_span, stage_span, reject_attempt
+from opentelemetry.trace import Status, StatusCode
 
 import plotly.graph_objects as go
 
 from . import agents
 from .analysis import (
-    AnalysisAcceptanceError,
-    analysis_statement,
-    accept_analyses,
-    load_result_frame,
-    render_plot,
-    result_metrics,
-    summarize_models,
-    validate_built_models,
-    validate_plot_spec,
-    representation_selections,
+    AnalysisAcceptanceError, analysis_statement, accept_analyses, load_result_frame, result_metrics, summarize_models,
 )
-from .core.contracts import CONTRACT_VERSION, plan_issues
+from .visualisation import (
+    render_plot, validate_plot_spec, representation_selections,
+)
+from .modelling_validation import plan_issues, validate_built_models
+from .core.contracts import (
+    CONTRACT_VERSION, AcceptedAnalysisResult, AnalysisPlan, AnalysisSpec, AnalyticalPlan, DbtImplementation,
+)
 from .context_cost import configured_cost_experiments
 from .data import load_raw, profile, relationships, schemas
 from .dbt import dbt_results, run_dbt, write_project
@@ -29,9 +29,12 @@ from .experiments import provenance, record_run
 from .config import ReleaseSettings, current_settings, use_settings, check_limit
 from .execution import current_budget, use_budget
 from .storage import cleanup_run_workspaces
-from .workspace import RunWorkspace, atomic_json, validate_submission
+from .workspace import RunWorkspace, validate_submission
 from .tools.result_tools import DuckDBResultTools, EvidenceRegistry, render_finding
 from .usage import summarize_usage
+
+
+AcceptedResults = list[tuple[AnalysisSpec, AcceptedAnalysisResult]]
 
 
 MAX_CONCEPTUAL_REVISIONS = 1
@@ -40,8 +43,8 @@ MAX_ANALYSIS_REPAIRS = 1
 MAX_FINDING_REPAIRS = 1
 
 def run(paths: list[Path], request: str, root: Path, *, on_event: Callable | None = None,
-        workspace: RunWorkspace | None = None, settings: ReleaseSettings | None = None) -> dict:
-    """Adapt existing callers to one workspace/settings owner, ready for a later RunContext."""
+        workspace: RunWorkspace | None = None, settings: ReleaseSettings | None = None) -> RunState:
+    """Run the explicit stages inside one workspace, settings snapshot and budget."""
     settings = settings or current_settings()
     settings = replace(settings, runs_root=str((workspace.root if workspace else root).resolve()))
     settings.validate()
@@ -54,21 +57,23 @@ def run(paths: list[Path], request: str, root: Path, *, on_event: Callable | Non
                 raise ValueError("Workspace inputs must not be symlinks")
         else:
             paths = workspace.persist(uploads, settings)
-        with use_settings(settings), use_budget(settings):
-            return _run(paths, request, workspace, on_event=on_event)
+        with use_settings(settings), use_budget(settings), workflow_span(workspace.run_id) as span:
+            result = _run(paths, request, workspace, on_event=on_event)
+            if result["status"] == "failed":
+                span.set_status(Status(StatusCode.ERROR, result.get("error", "Workflow failed")))
+            return result
     finally:
         workspace.remove_inputs()
 
 
-def _run(paths, request, workspace, *, on_event=None):
+def _run(paths: list[Path], request: str, workspace: RunWorkspace, *, on_event: Callable | None = None) -> RunState:
     # Snapshot once so every stage and repair in an A/B run uses the same controls.
     cost_experiments = configured_cost_experiments()
     settings = current_settings()
     root = workspace.root
     cleanup = cleanup_run_workspaces(root, active={workspace.run_id}, settings=settings)
     run_id, run_dir = workspace.run_id, workspace.run_dir
-    events = []
-    state = {
+    state: RunState = {
         "status": "running",
         "release_settings": settings.snapshot(),
         "contract_version": CONTRACT_VERSION,
@@ -77,108 +82,132 @@ def _run(paths, request, workspace, *, on_event=None):
         "run_dir": str(run_dir),
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
         "storage_cleanup": cleanup,
-        "events": events,
+        "events": [],
         "cost_experiments": sorted(cost_experiments),
         "strands_version": version("strands-agents"),
     }
-
-    save_lock = Lock()
-
-    def save():
-        # Concurrent evidence tools share this run's temporary file.
-        with save_lock:
-            atomic_json(workspace.result_path, state)
-
-    def emit(stage: str, kind: str, message: str, detail=None):
-        event = {
-            "time": datetime.now(timezone.utc).isoformat(),
-            "stage": stage,
-            "kind": kind,
-            "message": message,
-        }
-        if detail:
-            event["detail"] = detail
-        events.append(event)
-        save()
-        if on_event:
-            on_event(event)
-
-    database = workspace.database
-    project = workspace.dbt_dir
-
-    def save_dbt_attempt(number, implementation):
-        attempts_dir = run_dir / "attempts"
-        attempts_dir.mkdir(exist_ok=True)
-        path = attempts_dir / f"dbt_{number:02d}.json"
-        path.write_text(implementation.model_dump_json(indent=2))
-        state.setdefault("dbt_attempts", []).append(
-            {"attempt": number, "artifact": str(path),
-             "files": [item.path for item in implementation.files]}
-        )
-        emit("generating dbt models", "artifact", f"Saved dbt proposal {number}",
-             {"path": str(path)})
-
-    def track():
-        try:
-            record_run(root, state)
-        except Exception as exc:
-            state["experiment_tracker_error"] = f"{type(exc).__name__}: {exc}"
-            events.append({"time": datetime.now(timezone.utc).isoformat(),
-                           "stage": "experiment tracking", "kind": "failure",
-                           "message": state["experiment_tracker_error"]})
-            save()
+    record = RunRecord(workspace, state, on_event)
+    events = state["events"]
 
     try:
-        state["experiment"] = provenance(paths)
-        emit(
-            "loading data",
-            "start",
-            "Loading original CSV/Parquet/JSON data into DuckDB raw schema",
+        names, profiles, links = _prepare_sources(record, paths)
+        plan = _build_conceptual_model(record, request, names, profiles, links, cost_experiments)
+        model_names = _build_models(record, names, plan, profiles, links, cost_experiments)
+        analysis, accepted_results = _accept_analysis(record, request, plan, model_names, cost_experiments)
+        _generate_findings(record, accepted_results, cost_experiments)
+        _render_visualisations(record, accepted_results, cost_experiments)
+        state["quality_warnings"] = (
+            [
+                f"{r['orphan_rows']} orphan rows: {r['from']} → {r['to']}"
+                for r in links
+                if r["orphan_rows"]
+            ]
+            + [
+                f"{n}: {p['duplicate_rows']} duplicate rows"
+                for n, p in profiles.items()
+                if p["duplicate_rows"]
+            ]
+            + analysis.warnings
+            + [warning for finding in state["findings"] for warning in finding["caveats"]]
         )
-        track()
-        names = load_raw(database, paths)
-        state["raw_names"] = names
-        emit("loading data", "done", f"Loaded {len(names)} raw datasets")
+        record.complete("Validated dashboard is ready")
+    except Exception as exc:
+        record.fail(f"{type(exc).__name__}: {exc}")
+    budget = current_budget()
+    state["runtime_budget"] = {"internal_model_calls": budget.calls, "reported_estimated_cost_usd": budget.cost,
+                               "usage_unknown": budget.usage_unknown}
+    state["usage"] = summarize_usage(events)
+    record.save()
+    _track(record)
+    return state
 
-        emit(
-            "profiling data",
-            "start",
-            "Profiling columns, uniqueness, nulls and duplicate rows",
-        )
-        profiles = profile(database, names)
-        check_limit(len(json.dumps(profiles, default=str)), settings.max_profile_chars, "Serialized source profile")
-        state["profiles"] = profiles
-        emit("profiling data", "done", "Raw data profile complete")
 
-        emit(
-            "inferring relationships",
-            "start",
-            "Checking shared keys and orphan references",
-        )
-        links = relationships(database, profiles)
-        state["relationships"] = links
-        emit(
-            "inferring relationships",
-            "done",
-            f"Found {len(links)} candidate relationships",
-        )
+def _save_dbt_attempt(record: RunRecord, number: int, implementation: DbtImplementation) -> None:
+    state, emit, run_dir = record.state, record.emit, record.workspace.run_dir
+    attempts_dir = run_dir / "attempts"
+    attempts_dir.mkdir(exist_ok=True)
+    path = attempts_dir / f"dbt_{number:02d}.json"
+    path.write_text(implementation.model_dump_json(indent=2))
+    state.setdefault("dbt_attempts", []).append(
+        {"attempt": number, "artifact": str(path),
+         "files": [item.path for item in implementation.files]}
+    )
+    emit("generating dbt models", "artifact", f"Saved dbt proposal {number}",
+         {"path": str(path)})
 
-        emit(
-            "conceptual modelling",
-            "start",
-            "Interpreting business request and source evidence",
-        )
-        plan = None
-        issues = []
-        state["conceptual_attempts"] = []
-        for revision in range(MAX_CONCEPTUAL_REVISIONS + 1):
+
+def _track(record: RunRecord) -> None:
+    state, root = record.state, record.workspace.root
+    try:
+        record_run(root, state)
+    except Exception as exc:
+        state["experiment_tracker_error"] = f"{type(exc).__name__}: {exc}"
+        record.emit("experiment tracking", "failure", state["experiment_tracker_error"], notify=False)
+
+
+def _prepare_sources(record: RunRecord, paths: list[Path]) -> tuple[list[str], dict, list[dict]]:
+    state, emit = record.state, record.emit
+    database = record.workspace.database
+    settings = current_settings()
+    state["experiment"] = provenance(paths)
+    emit(
+        "loading data",
+        "start",
+        "Loading original CSV/Parquet/JSON data into DuckDB raw schema",
+    )
+    _track(record)
+    names = load_raw(database, paths)
+    state["raw_names"] = names
+    emit("loading data", "done", f"Loaded {len(names)} raw datasets")
+
+    emit(
+        "profiling data",
+        "start",
+        "Profiling columns, uniqueness, nulls and duplicate rows",
+    )
+    profiles = profile(database, names)
+    check_limit(len(json.dumps(profiles, default=str)), settings.max_profile_chars, "Serialized source profile")
+    state["profiles"] = profiles
+    emit("profiling data", "done", "Raw data profile complete")
+
+    emit(
+        "inferring relationships",
+        "start",
+        "Checking shared keys and orphan references",
+    )
+    links = relationships(database, profiles)
+    state["relationships"] = links
+    emit(
+        "inferring relationships",
+        "done",
+        f"Found {len(links)} candidate relationships",
+    )
+
+    return names, profiles, links
+
+
+def _build_conceptual_model(record: RunRecord, request: str, names: list[str],
+                            profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> AnalyticalPlan:
+    state, emit = record.state, record.emit
+    emit(
+        "conceptual modelling",
+        "start",
+        "Interpreting business request and source evidence",
+    )
+    plan = None
+    issues = []
+    state["conceptual_attempts"] = []
+    for revision in range(MAX_CONCEPTUAL_REVISIONS + 1):
+        with stage_span(record.workspace.run_id, "conceptual modelling", attempt=revision + 1) as trace_attributes:
             plan = agents.conceptual(request, profiles, links, emit, feedback=issues, previous=plan,
-                                     cost_experiments=cost_experiments)
+                                     cost_experiments=cost_experiments, trace_attributes=trace_attributes)
             attempt = {"attempt": revision + 1, "status": "proposed", "proposal": plan.model_dump()}
             state["conceptual_attempts"].append(attempt)
-            save()
+            record.save()
             issues = plan_issues(plan, profiles, links)
             attempt.update(status="rejected" if issues else "accepted", issues=[issue.model_dump() for issue in issues])
+            if issues:
+                reject_attempt("; ".join(map(str, issues)))
             if not issues:
                 break
             emit("conceptual modelling", "failure", f"Plan attempt {revision + 1} failed reference validation",
@@ -191,36 +220,47 @@ def _run(paths, request, workspace, *, on_event=None):
                 f"Revising plan after {len(issues)} source/plan contract failures",
                 {"issues": attempt["issues"], "revision": revision + 1},
             )
-        if issues:
-            raise ValueError(f"AnalyticalPlan validation failed: {'; '.join(map(str, issues))}")
-        emit(
-            "conceptual modelling",
-            "contract_check",
-            "Source references and planned output links resolve in this run",
-            {"models": [m.name for m in plan.dimensions + plan.facts],
-             "sources": names},
-        )
-        state["plan"] = plan.model_dump()
-        emit("conceptual modelling", "done", "Model plan accepted")
+    if issues:
+        raise ValueError(f"AnalyticalPlan validation failed: {'; '.join(map(str, issues))}")
+    emit(
+        "conceptual modelling",
+        "contract_check",
+        "Source references and planned output links resolve in this run",
+        {"models": [m.name for m in plan.dimensions + plan.facts],
+         "sources": names},
+    )
+    state["plan"] = plan.model_dump()
+    emit("conceptual modelling", "done", "Model plan accepted")
 
-        emit(
-            "generating dbt models",
-            "start",
-            "Creating dbt sources, dimensions, facts and tests",
-        )
-        expected_models = {
-            item.name for item in plan.dimensions + plan.facts
-        }
-        repair_count = 0
-        built_schemas = None
-        validation_failure = ""
-        implementation = None
-        while True:
+    return plan
+
+
+def _build_models(record: RunRecord, names: list[str], plan: AnalyticalPlan,
+                  profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> list[str]:
+    state, emit = record.state, record.emit
+    database = record.workspace.database
+    settings = current_settings()
+    project = record.workspace.dbt_dir
+    emit(
+        "generating dbt models",
+        "start",
+        "Creating dbt sources, dimensions, facts and tests",
+    )
+    expected_models = {
+        item.name for item in plan.dimensions + plan.facts
+    }
+    repair_count = 0
+    built_schemas = None
+    validation_failure = ""
+    implementation = None
+    while True:
+        with stage_span(record.workspace.run_id, "generating dbt models", attempt=repair_count + 1) as trace_attributes:
             implementation = agents.implement(
                 plan, profiles, links, emit, failure=validation_failure[-5000:], previous=implementation,
                 cost_experiments=cost_experiments,
+                trace_attributes=trace_attributes,
             )
-            save_dbt_attempt(repair_count + 1, implementation)
+            _save_dbt_attempt(record, repair_count + 1, implementation)
             produced_models = {
                 f.path[:-4] for f in implementation.files if f.path.endswith(".sql")
             }
@@ -296,6 +336,7 @@ def _run(paths, request, workspace, *, on_event=None):
                     except Exception as exc:
                         validation_failure += f"\nModel inspection unavailable: {type(exc).__name__}: {exc}"
             state["dbt_attempts"][-1].update(status="rejected", error=validation_failure[-5000:])
+            reject_attempt(validation_failure[-1500:])
             emit("validation and repair", "failure", validation_failure[-1500:])
             if repair_count >= MAX_DBT_REPAIRS:
                 raise RuntimeError(
@@ -308,28 +349,37 @@ def _run(paths, request, workspace, *, on_event=None):
                 f"Requesting dbt repair {repair_count}/{MAX_DBT_REPAIRS}",
                 {"failure": validation_failure[-5000:]},
             )
-        state["repair_attempts"] = repair_count
+    state["repair_attempts"] = repair_count
 
-        model_names = sorted(expected_models)
-        state["model_names"] = model_names
-        state["model_schemas"] = built_schemas
-        emit(
-            "validation and repair",
-            "done",
-            "Validated dbt tables are available in DuckDB",
-        )
+    model_names = sorted(expected_models)
+    state["model_names"] = model_names
+    state["model_schemas"] = built_schemas
+    emit(
+        "validation and repair",
+        "done",
+        "Validated dbt tables are available in DuckDB",
+    )
 
-        summaries = summarize_models(database, model_names)
-        emit(
-            "analytical interpretation",
-            "start",
-            "Deriving analytical results from validated models",
-        )
-        analysis = None
-        accepted_results = None
-        feedback = ""
-        state["analysis_attempts"] = []
-        for attempt in range(MAX_ANALYSIS_REPAIRS + 1):
+    return model_names
+
+
+def _accept_analysis(record: RunRecord, request: str, plan: AnalyticalPlan,
+                     model_names: list[str], cost_experiments: frozenset[str]) -> tuple[AnalysisPlan, AcceptedResults]:
+    state, emit = record.state, record.emit
+    database = record.workspace.database
+    settings = current_settings()
+    summaries = summarize_models(database, model_names)
+    emit(
+        "analytical interpretation",
+        "start",
+        "Deriving analytical results from validated models",
+    )
+    analysis = None
+    accepted_results = None
+    feedback = ""
+    state["analysis_attempts"] = []
+    for attempt in range(MAX_ANALYSIS_REPAIRS + 1):
+        with stage_span(record.workspace.run_id, "analytical interpretation", attempt=attempt + 1) as trace_attributes:
             proposed = agents.analyse(
                 request,
                 plan,
@@ -340,6 +390,7 @@ def _run(paths, request, workspace, *, on_event=None):
                 feedback=feedback,
                 previous=analysis,
                 cost_experiments=cost_experiments,
+                trace_attributes=trace_attributes,
             )
             analysis = proposed
             emit(
@@ -358,6 +409,7 @@ def _run(paths, request, workspace, *, on_event=None):
                 break
             except AnalysisAcceptanceError as exc:
                 feedback = str(exc)
+                reject_attempt(feedback)
                 state["analysis_attempts"].append(
                     {"attempt": attempt + 1, "status": "rejected", "index": exc.index,
                      "title": exc.title, "error": exc.database_error,
@@ -377,64 +429,73 @@ def _run(paths, request, workspace, *, on_event=None):
                     f"Requesting analysis correction {attempt + 1}/{MAX_ANALYSIS_REPAIRS}",
                     {"error": feedback},
                 )
-        assert analysis is not None and accepted_results is not None
-        state["analysis"] = analysis.model_dump()
-        emit(
-            "analytical interpretation",
-            "done",
-            f"Selected {len(analysis.analyses)} accepted analytical queries",
+    assert analysis is not None and accepted_results is not None
+    state["analysis"] = analysis.model_dump()
+    emit(
+        "analytical interpretation",
+        "done",
+        f"Selected {len(analysis.analyses)} accepted analytical queries",
+    )
+
+    state["analysis_results"] = []
+
+    for spec, accepted_result in accepted_results:
+        state["analysis_results"].append(
+            {
+                "title": spec.title,
+                "result_id": accepted_result.result_id,
+                "relation": accepted_result.relation,
+                "rows": accepted_result.row_count,
+                "columns": accepted_result.columns,
+                "acceptance_id": accepted_result.acceptance_id,
+                "executed_sql": analysis_statement(spec, analysis, model_names),
+                "concept_id": spec.concept_id,
+            }
         )
-
-        state["analysis_results"] = []
-
-        for spec, accepted_result in accepted_results:
-            state["analysis_results"].append(
-                {
-                    "title": spec.title,
-                    "result_id": accepted_result.result_id,
-                    "relation": accepted_result.relation,
-                    "rows": accepted_result.row_count,
-                    "columns": accepted_result.columns,
-                    "acceptance_id": accepted_result.acceptance_id,
-                    "executed_sql": analysis_statement(spec, analysis, model_names),
-                    "concept_id": spec.concept_id,
-                }
-            )
-            emit(
-                "analysis acceptance",
-                "contract_check",
-                f"Accepted {spec.title} as {accepted_result.relation}",
-                {"row_count": accepted_result.row_count,
-                 "columns": accepted_result.columns,
-                 "concept_id": spec.concept_id,
-                 "qualification_id": getattr(spec.query, "qualification_id", None)},
-            )
-
         emit(
             "analysis acceptance",
-            "done",
-            f"Accepted {len(accepted_results)} analytical results",
+            "contract_check",
+            f"Accepted {spec.title} as {accepted_result.relation}",
+            {"row_count": accepted_result.row_count,
+             "columns": accepted_result.columns,
+             "concept_id": spec.concept_id,
+             "qualification_id": getattr(spec.query, "qualification_id", None)},
         )
-        state["metrics"] = result_metrics(database, accepted_results)
 
-        state["findings"] = []
-        state["finding_attempts"] = []
-        state["evidence"] = []
-        for spec, accepted_result in accepted_results:
-            def register_evidence(record):
-                state["evidence"].append(record)
-                emit("analytical finding", "evidence", "Stored accepted-result evidence",
-                     {"evidence_id": record["id"], "acceptance_id": record["acceptance_id"],
-                      "rows": len(record["rows"]), "truncated": record["truncated"]})
+    emit(
+        "analysis acceptance",
+        "done",
+        f"Accepted {len(accepted_results)} analytical results",
+    )
+    state["metrics"] = result_metrics(database, accepted_results)
 
-            registry = EvidenceRegistry(accepted_result.acceptance_id, accepted_result.relation, register_evidence)
-            result_tools = DuckDBResultTools(database, accepted_result.relation, accepted_result.columns, spec, registry)
-            finding_error = ""
-            finding = None
-            for attempt in range(MAX_FINDING_REPAIRS + 1):
+    return analysis, accepted_results
+
+
+def _generate_findings(record: RunRecord, accepted_results: AcceptedResults,
+                       cost_experiments: frozenset[str]) -> None:
+    state, emit = record.state, record.emit
+    database = record.workspace.database
+    state["findings"] = []
+    state["finding_attempts"] = []
+    state["evidence"] = []
+    for result_index, (spec, accepted_result) in enumerate(accepted_results):
+        def register_evidence(evidence):
+            state["evidence"].append(evidence)
+            emit("analytical finding", "evidence", "Stored accepted-result evidence",
+                 {"evidence_id": evidence["id"], "acceptance_id": evidence["acceptance_id"],
+                  "rows": len(evidence["rows"]), "truncated": evidence["truncated"]})
+
+        registry = EvidenceRegistry(accepted_result.acceptance_id, accepted_result.relation, register_evidence)
+        result_tools = DuckDBResultTools(database, accepted_result.relation, accepted_result.columns, spec, registry)
+        finding_error = ""
+        finding = None
+        for attempt in range(MAX_FINDING_REPAIRS + 1):
+            with stage_span(record.workspace.run_id, "analytical finding", attempt=attempt + 1, result_index=result_index) as trace_attributes:
                 finding = agents.interpret(
                     spec, accepted_result, emit, result_tools, feedback=finding_error, previous=finding,
                     cost_experiments=cost_experiments,
+                    trace_attributes=trace_attributes,
                 )
                 try:
                     finding_text, evidence = render_finding(finding, registry)
@@ -459,6 +520,7 @@ def _run(paths, request, workspace, *, on_event=None):
                     break
                 except Exception as exc:
                     finding_error = f"{type(exc).__name__}: {exc}"
+                    reject_attempt(finding_error)
                     state["finding_attempts"].append(
                         {"title": spec.title, "attempt": attempt + 1,
                          "status": "rejected", "error": finding_error,
@@ -472,38 +534,46 @@ def _run(paths, request, workspace, *, on_event=None):
                     if attempt >= MAX_FINDING_REPAIRS:
                         raise
 
-        emit(
-            "visualisation generation",
-            "start",
-            "Rendering Plotly figures from accepted analytical results",
-        )
-        state["plot_specs"] = []
-        state["plot_attempts"] = []
-        state["charts"] = []
-        for index, (spec, accepted_result) in enumerate(accepted_results):
-            if accepted_result.row_count == 0:
-                check_limit(len(state["charts"]) + 1, settings.max_charts, "Chart count")
-                figure = go.Figure()
-                figure.update_layout(title=spec.title)
-                figure.add_annotation(text="No rows matched the analysis criteria", showarrow=False)
-                figure.write_json(run_dir / f"chart_{index}.json")
-                state["plot_specs"].append(None)
-                state["charts"].append({"result_index": index, "concept_id": spec.concept_id,
-                                        "title": spec.title, "file": f"chart_{index}.json"})
-                state["plot_attempts"].append(
-                    {"title": spec.title, "status": "empty_result", "relation": accepted_result.relation}
-                )
-                emit(
-                    "visualisation generation", "contract_check",
-                    f"Rendered an empty-result figure for {spec.title}",
-                    {"relation": accepted_result.relation, "row_count": 0},
-                )
-                continue
-            for variant_index, (label, selection) in enumerate(representation_selections(database, spec, accepted_result)):
+
+def _render_visualisations(record: RunRecord, accepted_results: AcceptedResults,
+                           cost_experiments: frozenset[str]) -> None:
+    state, emit = record.state, record.emit
+    database = record.workspace.database
+    settings = current_settings()
+    run_dir = record.workspace.run_dir
+    emit(
+        "visualisation generation",
+        "start",
+        "Rendering Plotly figures from accepted analytical results",
+    )
+    state["plot_specs"] = []
+    state["plot_attempts"] = []
+    state["charts"] = []
+    for index, (spec, accepted_result) in enumerate(accepted_results):
+        if accepted_result.row_count == 0:
+            check_limit(len(state["charts"]) + 1, settings.max_charts, "Chart count")
+            figure = go.Figure()
+            figure.update_layout(title=spec.title)
+            figure.add_annotation(text="No rows matched the analysis criteria", showarrow=False)
+            figure.write_json(run_dir / f"chart_{index}.json")
+            state["plot_specs"].append(None)
+            state["charts"].append({"result_index": index, "concept_id": spec.concept_id,
+                                    "title": spec.title, "file": f"chart_{index}.json"})
+            state["plot_attempts"].append(
+                {"title": spec.title, "status": "empty_result", "relation": accepted_result.relation}
+            )
+            emit(
+                "visualisation generation", "contract_check",
+                f"Rendered an empty-result figure for {spec.title}",
+                {"relation": accepted_result.relation, "row_count": 0},
+            )
+            continue
+        for variant_index, (label, selection) in enumerate(representation_selections(database, spec, accepted_result)):
+            with stage_span(record.workspace.run_id, "visualisation generation", result_index=index) as trace_attributes:
                 title = spec.title if label is None else f"{spec.title} — {label}"
                 check_limit(len(state["charts"]) + 1, settings.max_charts, "Chart count")
                 plot = agents.plot(spec, accepted_result, state["findings"][index], emit, database,
-                                   selection=selection, cost_experiments=cost_experiments)
+                                   selection=selection, cost_experiments=cost_experiments, trace_attributes=trace_attributes)
                 try:
                     validate_plot_spec(plot, accepted_result, selection)
                     frame = load_result_frame(database, accepted_result)
@@ -530,31 +600,4 @@ def _run(paths, request, workspace, *, on_event=None):
                 emit("visualisation generation", "contract_check", f"Rendered {title} from {accepted_result.relation}",
                      {"function": plot.function, "columns": plot.columns, "options": plot.options,
                       "filters": [f.model_dump() for f in plot.filters]})
-        emit("visualisation generation", "done", f"Rendered {len(state['charts'])} figures")
-        state["quality_warnings"] = (
-            [
-                f"{r['orphan_rows']} orphan rows: {r['from']} → {r['to']}"
-                for r in links
-                if r["orphan_rows"]
-            ]
-            + [
-                f"{n}: {p['duplicate_rows']} duplicate rows"
-                for n, p in profiles.items()
-                if p["duplicate_rows"]
-            ]
-            + analysis.warnings
-            + [warning for finding in state["findings"] for warning in finding["caveats"]]
-        )
-        state["status"] = "complete"
-        emit("dashboard completion", "done", "Validated dashboard is ready")
-    except Exception as exc:
-        state["status"] = "failed"
-        state["error"] = f"{type(exc).__name__}: {exc}"
-        emit("dashboard completion", "failure", state["error"])
-    budget = current_budget()
-    state["runtime_budget"] = {"internal_model_calls": budget.calls, "reported_estimated_cost_usd": budget.cost,
-                               "usage_unknown": budget.usage_unknown}
-    state["usage"] = summarize_usage(events)
-    save()
-    track()
-    return state
+    emit("visualisation generation", "done", f"Rendered {len(state['charts'])} figures")

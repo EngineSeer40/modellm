@@ -4,15 +4,17 @@ import json
 import re
 import shutil
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .config import ReleaseSettings, check_limit
 from .data import identifier
 
 
-def atomic_json(path: Path, value: dict):
+def atomic_json(path: Path, value: Mapping[str, Any]):
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("x", encoding="utf-8") as stream:
