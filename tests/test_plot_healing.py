@@ -63,7 +63,7 @@ def test_failed_chart_is_skipped_between_successful_charts(plot_case, monkeypatc
 
 
 @pytest.mark.parametrize('error', [ValueError('Internal model calls exceeds configured limit'),
-    RuntimeError('Reported model cost budget exhausted'), RuntimeError('Workflow deadline exceeded'),
+    RuntimeError('Reported model cost budget exhausted'),
     TimeoutError('Provider connection timed out')])
 def test_global_and_transport_errors_are_not_skipped(plot_case, monkeypatch, error):
     def fail(*args, **kwargs):

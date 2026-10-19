@@ -476,16 +476,16 @@ Numeric limits read `MODELLM_<FIELD_NAME_IN_UPPERCASE>`. Default production admi
 
 | Change | Sources/consumers to inspect together | Existing verification evidence locations |
 | --- | --- | --- |
-| Conceptual field, reference, grain or relationship contract | `contracts.py`, conceptual prompt, `agents.conceptual`, `plan_issues`, dbt prompt, built checks, diagram/UI | `test_plan_validation.py`, `test_execution_contracts.py`, `test_agent_workflow.py` |
+| Conceptual field, reference, grain or relationship contract | `contracts.py`, conceptual prompt, `agents.conceptual`, `plan_issues`, dbt prompt, built checks, diagram/UI | `test_execution_contracts.py` (including unimplemented-process checks), `test_agent_workflow.py` |
 | Generated dbt format or SQL permissions | `DbtFile`, `DbtImplementation`, modelling prompt, workflow expected set, `sql_policy.py`, `dbt.py` | `test_release.py`, `test_calendar_sql.py`, `test_agent_workflow.py`, container smoke |
 | Analysis query/qualification/semantics | `AnalysisPlan` graph, Analysis prompt/payload/tools, SQL policy, `analysis_statement`, acceptance, stored executed SQL, Plotting and UI | `test_analysis_boundary.py`, `test_analysis_results.py`, `test_execution_contracts.py`, `test_agent_workflow.py` |
 | Plot catalogue, arguments, selection or renderer | `PlotSpec`, `ResultFilter`, `PLOTTING`, Analysis catalogue context, `agents.plot`, scoped validator, final guard, artifacts/UI associations | `test_plot_context.py`, `test_plot_healing.py`, plot tests in `test_context_cost.py`, `test_execution_contracts.py`, `test_presentation.py` |
-| Finding/evidence code | Finding schemas, `ANALYSIS_FINDING`, `agents.interpret`, result tools, registry, `render_finding`, dormant workflow and saved UI | Finding cases in `test_context_cost.py` and `test_execution_contracts.py`; active workflow verifies stage stays disabled |
+| Finding/evidence code | Finding schemas, `ANALYSIS_FINDING`, `agents.interpret`, result tools, registry, `render_finding`, dormant workflow and saved UI | Generation/evidence tests retired while the stage is disabled; `test_agent_workflow.py` verifies it stays disabled and `test_saved_run.py` preserves presentation of saved findings |
 | Stage names, events or run-record keys | Workflow/runtime emitters, `RunState`, `RunRecord`, progress/live/views, usage and ledger | `test_run.py`, `test_saved_run.py`, `test_agent_workflow.py`, `test_context_cost.py`, `test_telemetry.py` |
 | Runtime/caching/model/budget settings | `config.py`, `agent_runtime.py`, `context_cost.py`, `execution.py`, `usage.py`, deployment env | `test_model_selection.py`, `test_sonnet55.py`, `test_context_cost.py`, `test_release.py` |
 | Input/workspace/retention or worker protocol | UI submission, `RunManager`, `worker`, `RunWorkspace`, database/storage, saved-run loader | `test_json_ingestion.py`, `test_release.py`, `test_saved_run.py`, container smoke |
 
-Test paths above are under [tests/](tests/). Ordinary tests use local stubs rather than live Bedrock calls. Passing tests establish the exercised behavior; neither test counts nor `complete` status establish semantic quality for arbitrary generated analysis or charts.
+Test paths above are under [tests/](tests/). Ordinary tests use local stubs rather than live Bedrock calls; shared scripted SDK responses live in `tests/local_model.py`. Schema stability across results, immutable workflow controls across repairs, dbt model-set and command-failure repairs, pricing aliases, missing saved-run IDs and telemetry flush failure remain covered after test consolidation. Passing tests establish the exercised behavior; neither test counts nor `complete` status establish semantic quality for arbitrary generated analysis or charts.
 
 Known limits to keep explicit when reading or changing the map:
 

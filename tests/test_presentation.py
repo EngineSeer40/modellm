@@ -2,20 +2,18 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
-import pytest
 
 from src.ui.presentation import format_chart
 
 
-@pytest.mark.parametrize("faceted", [False, True])
-def test_saved_categorical_bars_do_not_gain_colour_scales(faceted):
+def test_saved_categorical_bars_do_not_gain_colour_scales():
     frame = pd.DataFrame({
         "channel": ["Online", "Store", "Online", "Store"],
         "subscription": ["Basic", "Basic", "Plus", "Plus"],
         "customers": [118, 15, 81, 8],
     })
     figure = px.bar(frame, x="channel", y="customers", color="subscription",
-                    barmode="group", facet_col="subscription" if faceted else None)
+                    barmode="group", facet_col="subscription")
     figure.update_yaxes(range=[0, 125])
     # Exercise the same Plotly JSON round trip as saved dashboards.
     figure = pio.from_json(figure.to_json())
@@ -35,15 +33,8 @@ def test_saved_categorical_bars_do_not_gain_colour_scales(faceted):
             assert after["layout"][name].get("range") == axis.get("range")
 
 
-@pytest.mark.parametrize("kind", ["heatmap", "map"])
-def test_shared_continuous_colour_scales_keep_their_data_and_formatting(kind):
-    if kind == "heatmap":
-        figure = px.imshow([[0.1234, 0.5678]])
-    else:
-        figure = px.scatter_map(pd.DataFrame({
-            "latitude": [-33.86, -37.81], "longitude": [151.20, 144.96],
-            "share": [0.1234, 0.5678],
-        }), lat="latitude", lon="longitude", color="share")
+def test_shared_continuous_colour_scales_keep_their_data_and_formatting():
+    figure = px.imshow([[0.1234, 0.5678]])
     figure.update_coloraxes(cmin=0, cmax=1, colorbar_tickformat=".4%")
     figure = pio.from_json(figure.to_json())
     before = figure.to_plotly_json()

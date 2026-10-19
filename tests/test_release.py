@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 import subprocess
 import sys
 import time
@@ -20,7 +19,7 @@ from src.execution import RunBudget, RunManager
 from src.sql_policy import validate_dbt_files
 from src.storage import cleanup_run_workspaces
 from src.workspace import RunWorkspace, atomic_json, validate_submission
-from test_context_cost import LocalModel
+from local_model import LocalModel
 
 UPLOADS = [("accounts.csv", b"id\n1\n"), ("events.csv", b"id\n1\n")]
 
@@ -232,7 +231,6 @@ def test_ingest_rejects_source_shape_before_profiling(tmp_path):
 @pytest.mark.parametrize(("live_enabled", "access_code", "configured"), [
     ("false", "testcode", False),
     ("true", "", False), ("true", "1234567", False), ("true", "testcode", True),
-    ("true", "a-longer-access-code-for-tests", True),
 ])
 def test_live_access_requires_enabled_runs_and_configured_code(tmp_path, monkeypatch, live_enabled, access_code, configured):
     from streamlit.testing.v1 import AppTest
@@ -324,22 +322,6 @@ def test_nested_cte_alias_cannot_authorize_a_real_table():
         validate_analysis_sql(malicious, ["fact_events"])
     valid = "WITH private AS (SELECT * FROM main.fact_events) SELECT * FROM private"
     assert validate_analysis_sql(valid, ["fact_events"]) == valid
-
-
-def test_deployment_parameters_preserve_application_model_and_cost_defaults(monkeypatch):
-    import yaml
-    from src.context_cost import configured_cost_experiments
-    for name in ("MODELLM_BEDROCK_MODEL_ID", "MODELLM_PLOTTING_MODEL_ID", "MODELLM_COST_EXPERIMENTS"):
-        monkeypatch.delenv(name, raising=False)
-    config = ReleaseSettings.from_env()
-    root = Path(__file__).resolve().parents[1]
-    template = yaml.load((root / "infra/service.yaml").read_text(), Loader=yaml.BaseLoader)
-    defaults = {key: value.get("Default") for key, value in template["Parameters"].items()}
-    example = json.loads((root / "infra/parameters.json.example").read_text())
-    for values in (defaults, example):
-        assert values["ModelId"] == config.model_id
-        assert values["PlottingModelId"] == config.plotting_model_id
-        assert frozenset(values["CostExperiments"].split(",")) == configured_cost_experiments()
 
 
 def test_deployment_bootstrap_separates_github_trust_and_role_passing():

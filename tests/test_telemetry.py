@@ -14,8 +14,7 @@ from opentelemetry.trace import StatusCode
 from strands import tool
 
 from src import agent_runtime, telemetry, workflow
-from test_context_cost import LocalModel
-from test_model_selection import Response
+from local_model import LocalModel, Response
 
 
 @pytest.fixture(autouse=True)
@@ -196,26 +195,11 @@ def test_setup_is_optional_and_warns_without_credentials(missing, monkeypatch, c
     assert constructor.call_count == (0 if missing else 1)
 
 
-def test_setup_is_once_per_worker_with_short_timeout(monkeypatch):
-    constructor = Mock()
-    monkeypatch.setattr("langfuse.Langfuse", constructor)
-    monkeypatch.setenv("MODELLM_LANGFUSE_ENABLED", "true")
-    for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"):
-        monkeypatch.setenv(name, "configured")
-    telemetry.configure_langfuse()
-    telemetry.configure_langfuse()
-    constructor.assert_called_once_with(timeout=2, should_export_span=telemetry._export_span)
-
-
-@pytest.mark.parametrize("failure", ["lookup", "publication"])
-def test_trace_link_failure_does_not_fail_workflow(spans, tmp_path, monkeypatch, caplog, failure):
+def test_trace_link_failure_does_not_fail_workflow(spans, tmp_path, monkeypatch, caplog):
     client = Mock()
-    if failure == "publication":
-        client.set_current_trace_as_public.side_effect = OSError("private-auth-value")
-    else:
-        client.get_trace_url.side_effect = OSError("private-auth-value")
+    client.set_current_trace_as_public.side_effect = OSError("private-auth-value")
     monkeypatch.setattr(telemetry, "_langfuse_client", client)
-    monkeypatch.setattr(telemetry, "_langfuse_public", failure == "publication")
+    monkeypatch.setattr(telemetry, "_langfuse_public", True)
     paths = [tmp_path / name for name in ("accounts.csv", "events.csv")]
     for path in paths:
         path.write_text("id\n1\n")

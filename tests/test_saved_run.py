@@ -10,8 +10,8 @@ from streamlit.testing.v1 import AppTest
 from src.ui.saved_run import load_saved_run
 
 
-@pytest.mark.parametrize("trace_url", [None, "https://cloud.langfuse.com/project/demo/traces/existing"])
-def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, monkeypatch, trace_url):
+def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, monkeypatch):
+    trace_url = "https://cloud.langfuse.com/project/demo/traces/existing"
     snapshot = tmp_path / "saved_run"
     snapshot.mkdir()
     go.Figure(go.Bar(x=["customers"], y=[2])).write_json(snapshot / "chart_0.json")

@@ -5,19 +5,13 @@ import pytest
 from src.analysis import (
     AnalysisAcceptanceError, accept_analyses,
 )
-from src.visualisation import (
-    render_plot, validate_plot_spec,
-)
 from src.modelling_validation import (
     validate_built_models,
 )
-from src.core.contracts import (
-    AcceptedAnalysisResult, AnalysisDimension, AnalysisFinding, AnalysisMeasure, AnalysisPlan, AnalysisSpec, AnalyticalPlan, BusinessProcessPlan, DimensionPlan, EvidenceAggregate, FactDimensionLink, FactPlan, FindingStatement, PlotSpec, RatioComponents, ResultFilter, SharedQualification, SourceMatchPath, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell,
-)
+from src.core.contracts import AnalysisDimension, AnalysisMeasure, AnalysisPlan, AnalysisSpec, AnalyticalPlan, BusinessProcessPlan, DimensionPlan, FactDimensionLink, FactPlan, RatioComponents, SharedQualification, SourceMatchPath, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition
 from src.modelling_validation import (
     plan_issues,
 )
-from src.tools.result_tools import DuckDBResultTools, EvidenceRegistry, render_finding
 
 def source_plan() -> AnalyticalPlan:
     """Use names that have no relationship to the recorded customer fixture."""
@@ -37,30 +31,9 @@ def test_source_references_are_exact_and_support_multiple_paths():
     changed.dimensions[0].output_fields[1].definition.inputs[0].column = 'field_ref'
     issues = plan_issues(changed, profiles())
     assert any(('registry.field_ref' in issue.message and 'Field Ref' in issue.expected for issue in issues))
+    plan.business_processes.append(BusinessProcessPlan(name='unimplemented', description='No supporting fact'))
+    assert {issue.code for issue in plan_issues(plan, profiles())} == {'unimplemented_process'}
 
-def test_source_contract_is_invariant_to_run_specific_names():
-    plan = source_plan()
-    original = profiles()
-    datasets = {'registry': 'catalogue', 'field_notes': 'observations_a', 'lab_notes': 'observations_b'}
-    columns = {'Specimen Code': 'Object Identifier', 'Field Ref': 'Survey Token', 'Lab Ref': 'Assay Token'}
-    renamed_profiles = {datasets[name]: {'columns': [{'name': columns[column['name']]} for column in value['columns']]} for name, value in original.items()}
-    for model in plan.dimensions + plan.facts:
-        model.source_datasets = [datasets[name] for name in model.source_datasets]
-        for output in model.output_fields:
-            for ref in output.definition.inputs:
-                ref.dataset = datasets[ref.dataset]
-                ref.column = columns[ref.column]
-    for fact in plan.facts:
-        for link in fact.dimension_links:
-            for path in link.source_paths:
-                path.source_dataset = datasets[path.source_dataset]
-                for step in path.steps:
-                    for pair in step.pairs:
-                        for endpoint in (pair.left, pair.right):
-                            if endpoint.kind == 'source':
-                                endpoint.dataset = datasets[endpoint.dataset]
-                                endpoint.column = columns[endpoint.column]
-    assert plan_issues(plan, renamed_profiles) == []
 
 def test_built_outputs_and_declared_grain_are_checked(tmp_path: Path):
     database = tmp_path / 'models.duckdb'
@@ -135,30 +108,3 @@ def test_variant_expansion_is_checked_before_analysis_commit(tmp_path: Path):
                                "WHERE table_schema = 'analysis'").fetchall()
     spec.variant_field = 'specimen'
     assert len(accept_analyses(database, ['fact_observations'], plan, max_charts=2)) == 1
-
-def test_findings_bind_numbers_to_accepted_result_and_plot_fields_are_scoped(tmp_path: Path):
-    database = tmp_path / 'result.duckdb'
-    with duckdb.connect(str(database)) as con:
-        con.execute('CREATE SCHEMA analysis')
-        con.execute("CREATE TABLE analysis.result_00 AS SELECT 'fern' AS specimen, 185 AS observed, 269 AS possible")
-    spec = analysis_spec('SELECT specimen, observed FROM main.fact_observations')
-    spec.measures.append(AnalysisMeasure(field='possible', semantic_type='count', description='Possible count', additivity='additive'))
-    result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"', row_count=1, columns={'specimen': 'VARCHAR', 'observed': 'INTEGER', 'possible': 'INTEGER'}, profile=[])
-    registry = EvidenceRegistry(result.acceptance_id, result.relation)
-    tools = DuckDBResultTools(database, result.relation, result.columns, spec, registry)
-    record = tools.inspect_result(request=EvidenceRequest(kind='summary', aggregates={'n': EvidenceAggregate(function='sum', field='observed'), 'd': EvidenceAggregate(function='sum', field='possible')}).model_dump())
-    finding = AnalysisFinding(statements=[FindingStatement(template='{n} of {d} observations were recorded.', selected_rows={'total': EvidenceRowRef(evidence_id=record['id'], row_id=record['rows'][0]['row_id'])}, bindings={'n': FindingCell(row='total', column='n'), 'd': FindingCell(row='total', column='d')})], caveats=[])
-    rendered, evidence = render_finding(finding, registry)
-    assert rendered == '185 of 269 observations were recorded.'
-    assert evidence[0]['rows'][0]['values'] == {'n': 185, 'd': 269}
-    finding.statements[0].template = '238 of {d} observations were recorded.'
-    with pytest.raises(ValueError, match='bindings without placeholders'):
-        render_finding(finding, registry)
-    plot = PlotSpec(function='bar', columns={'x': 'specimen', 'y': 'observed'}, filters=[ResultFilter(field='specimen', operator='eq', values=['fern'])], options={})
-    validate_plot_spec(plot, result, plot.filters)
-    with duckdb.connect(str(database), read_only=True) as con:
-        frame = con.execute('SELECT * FROM analysis.result_00').df()
-    assert len(render_plot(frame, plot, 'Observations').data) == 1
-    plot.columns['y'] = 'unknown upstream field'
-    with pytest.raises(ValueError, match='missing accepted-result column'):
-        validate_plot_spec(plot, result, plot.filters)

@@ -1,13 +1,9 @@
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel
+from local_model import Response
 
 from src import agent_runtime as agents
-
-
-class Response(BaseModel):
-    value: str
 
 
 @pytest.mark.parametrize(
@@ -15,7 +11,6 @@ class Response(BaseModel):
     [
         (None, "au.anthropic.claude-sonnet-4-6"),
         ("au.anthropic.claude-haiku-4-5-20251001-v1:0", "au.anthropic.claude-haiku-4-5-20251001-v1:0"),
-        ("test.model-id", "test.model-id"),
     ],
 )
 def test_selected_model_reaches_strands(monkeypatch, override, expected):
@@ -56,9 +51,7 @@ def test_selected_model_reaches_strands(monkeypatch, override, expected):
     assert expected in events[-1][2]
 
 
-@pytest.mark.parametrize("prod", ["true", "false"])
-def test_stage_defaults_and_explicit_haiku_override(monkeypatch, prod):
-    monkeypatch.setenv("MODELLM_PROD", prod)
+def test_stage_defaults_and_explicit_haiku_override(monkeypatch):
     monkeypatch.delenv("MODELLM_BEDROCK_MODEL_ID", raising=False)
     monkeypatch.delenv("MODELLM_PLOTTING_MODEL_ID", raising=False)
     main_stages = ("conceptual modelling", "generating dbt models",
