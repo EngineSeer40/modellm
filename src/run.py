@@ -34,6 +34,7 @@ class RunProgress(TypedDict):
 class RunState(RunProgress):
     run_id: str
     run_dir: str
+    langfuse_trace_url: NotRequired[str]
     request: NotRequired[str]
     started_at_utc: NotRequired[str]
     contract_version: NotRequired[int]

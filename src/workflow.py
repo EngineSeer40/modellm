@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Callable
 
 from .run import RunRecord, RunState
-from .telemetry import workflow_span, stage_span, reject_attempt
+from .telemetry import (
+    workflow_span, stage_span, reject_attempt, current_langfuse_trace_url, finish_workflow_trace,
+)
 from opentelemetry.trace import Status, StatusCode
 
 import plotly.graph_objects as go
@@ -57,10 +59,11 @@ def run(paths: list[Path], request: str, root: Path, *, on_event: Callable | Non
                 raise ValueError("Workspace inputs must not be symlinks")
         else:
             paths = workspace.persist(uploads, settings)
-        with use_settings(settings), use_budget(settings), workflow_span(workspace.run_id) as span:
+        with use_settings(settings), use_budget(settings), workflow_span(workspace.run_id, request) as span:
             result = _run(paths, request, workspace, on_event=on_event)
             if result["status"] == "failed":
                 span.set_status(Status(StatusCode.ERROR, result.get("error", "Workflow failed")))
+            finish_workflow_trace(span, result)
             return result
     finally:
         workspace.remove_inputs()
@@ -87,6 +90,8 @@ def _run(paths: list[Path], request: str, workspace: RunWorkspace, *, on_event: 
         "strands_version": version("strands-agents"),
     }
     record = RunRecord(workspace, state, on_event)
+    if trace_url := current_langfuse_trace_url():
+        state["langfuse_trace_url"] = trace_url
     events = state["events"]
 
     try:

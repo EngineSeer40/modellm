@@ -122,9 +122,12 @@ def test_restricted_dbt_build_and_environment(tmp_path, monkeypatch):
         env = kwargs["env"]
         assert not any(key.startswith("AWS_") for key in env)
         assert "MODELLM_LIVE_ACCESS_CODE" not in env
+        assert not any(key.startswith("LANGFUSE_") for key in env)
         return real_run(*args, **kwargs)
     monkeypatch.setenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/sensitive")
     monkeypatch.setenv("MODELLM_LIVE_ACCESS_CODE", "private")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-private")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-private")
     monkeypatch.setattr(subprocess, "run", inspect_env)
     result = run_dbt(project, "build")
     assert result["ok"], result["output"]
@@ -175,6 +178,7 @@ def test_worker_deadline_kills_descendants_releases_slot_and_preserves_usage(tmp
               f"open({str(pid_file)!r},'w').write(str(p.pid)); time.sleep(60)")
     def hanging_worker(args, **kwargs):
         assert "MODELLM_LIVE_ACCESS_CODE" not in kwargs["env"]
+        assert kwargs["stderr"] is None
         return real_popen([sys.executable, "-c", script], **kwargs)
     monkeypatch.setattr(execution.subprocess, "Popen", hanging_worker)
     monkeypatch.setenv("MODELLM_LIVE_ACCESS_CODE", "private")

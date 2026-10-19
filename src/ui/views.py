@@ -83,6 +83,8 @@ def render_results(state: RunState | None):
         st.info("Upload related datasets and describe your question in Run to create a dashboard.")
         return
     render_outcome(state)
+    if trace_url := state.get("langfuse_trace_url"):
+        st.markdown(f"[View Langfuse Observability Trace ↗]({trace_url})")
     render_usage(state)
     if state["status"] != "complete":
         st.info("A completed run is required to display the dashboard. Data Model shows any model built so far.")

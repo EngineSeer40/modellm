@@ -10,6 +10,9 @@ Parameters:
   # Retain this existing input key for compatibility; it holds the production live-access-code secret.
   PreviewSecretArn: {Type: String}
   SecretKmsKeyArn: {Type: String, Default: ''}
+  LangfuseSecretArn: {Type: String, Default: ''}
+  LangfuseBaseUrl: {Type: String, Default: 'https://cloud.langfuse.com'}
+  LangfusePublic: {Type: String, Default: 'false', AllowedValues: ['true', 'false']}
   ModelId: {Type: String, Default: 'au.anthropic.claude-sonnet-4-6'}
   PlottingModelId: {Type: String, Default: 'au.anthropic.claude-haiku-4-5-20251001-v1:0'}
   BedrockResourceArns:
@@ -28,6 +31,7 @@ Parameters:
   BudgetEmail: {Type: String, Default: ''}
   MonthlyBudgetUsd: {Type: Number, Default: 50}
 Conditions:
+  HasLangfuseSecret: !Not [!Equals [!Ref LangfuseSecretArn, '']]
   CustomerKey: !Not [!Equals [!Ref SecretKmsKeyArn, '']]
   BudgetNotification: !Not [!Equals [!Ref BudgetEmail, '']]
 Resources:
@@ -114,6 +118,10 @@ Resources:
                 Resource: !GetAtt Logs.Arn
               - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref PreviewSecretArn}
               - !If
+                - HasLangfuseSecret
+                - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref LangfuseSecretArn}
+                - !Ref AWS::NoValue
+              - !If
                 - CustomerKey
                 - {Effect: Allow, Action: 'kms:Decrypt', Resource: !Ref SecretKmsKeyArn}
                 - !Ref AWS::NoValue
@@ -168,10 +176,22 @@ Resources:
             - {Name: MODELLM_BEDROCK_MODEL_ID, Value: !Ref ModelId}
             - {Name: MODELLM_PLOTTING_MODEL_ID, Value: !Ref PlottingModelId}
             - {Name: MODELLM_COST_EXPERIMENTS, Value: !Ref CostExperiments}
+            - {Name: MODELLM_LANGFUSE_ENABLED, Value: !If [HasLangfuseSecret, 'true', 'false']}
+            - {Name: MODELLM_LANGFUSE_PUBLIC, Value: !Ref LangfusePublic}
+            - {Name: LANGFUSE_BASE_URL, Value: !Ref LangfuseBaseUrl}
             - {Name: STREAMLIT_SERVER_MAX_UPLOAD_SIZE, Value: '20'}
             - {Name: STREAMLIT_BROWSER_SERVER_ADDRESS, Value: !Ref Hostname}
             - {Name: STREAMLIT_BROWSER_SERVER_PORT, Value: '443'}
-          Secrets: [{Name: MODELLM_LIVE_ACCESS_CODE, ValueFrom: !Ref PreviewSecretArn}]
+          Secrets:
+            - {Name: MODELLM_LIVE_ACCESS_CODE, ValueFrom: !Ref PreviewSecretArn}
+            - !If
+              - HasLangfuseSecret
+              - {Name: LANGFUSE_PUBLIC_KEY, ValueFrom: !Sub '${LangfuseSecretArn}:LANGFUSE_PUBLIC_KEY::'}
+              - !Ref AWS::NoValue
+            - !If
+              - HasLangfuseSecret
+              - {Name: LANGFUSE_SECRET_KEY, ValueFrom: !Sub '${LangfuseSecretArn}:LANGFUSE_SECRET_KEY::'}
+              - !Ref AWS::NoValue
           LogConfiguration:
             LogDriver: awslogs
             Options:

@@ -10,7 +10,8 @@ from streamlit.testing.v1 import AppTest
 from src.ui.saved_run import load_saved_run
 
 
-def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, monkeypatch):
+@pytest.mark.parametrize("trace_url", [None, "https://cloud.langfuse.com/project/demo/traces/existing"])
+def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, monkeypatch, trace_url):
     snapshot = tmp_path / "saved_run"
     snapshot.mkdir()
     go.Figure(go.Bar(x=["customers"], y=[2])).write_json(snapshot / "chart_0.json")
@@ -25,6 +26,8 @@ def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, mo
         "charts": [{"title": "Customer count", "file": "chart_0.json", "result_index": 0}],
         "findings": [{"text": "There are two customers", "evidence": []}],
     }
+    if trace_url:
+        state["langfuse_trace_url"] = trace_url
     (snapshot / "result.json").write_text(json.dumps(state))
     assert load_saved_run(snapshot)["run_dir"] == str(snapshot)
     assert load_saved_run(snapshot / "result.json")["run_dir"] == str(snapshot)
@@ -33,6 +36,7 @@ def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, mo
         pytest.fail("Saved dashboards must not start workers or retention cleanup")
 
     monkeypatch.setattr("src.ui.app.run_manager", forbidden)
+    monkeypatch.setattr("src.telemetry.configure_langfuse", forbidden)
     monkeypatch.setattr(sys, "argv", ["app.py", "--saved-run", str(snapshot)])
     root = Path(__file__).resolve().parents[1]
     app = AppTest.from_file(root / "app.py").run(timeout=20)
@@ -43,6 +47,8 @@ def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, mo
     assert not any(button.label == "Start Modelling" for button in app.button)
     assert not any("expired" in message.value for message in app.info)
     assert [tab.label for tab in app.tabs] == ["Run", "Results", "Data Model", "Technical Details"]
+    links = [item.value for item in app.markdown if "View Langfuse Observability Trace" in item.value]
+    assert links == ([f"[View Langfuse Observability Trace ↗]({trace_url})"] if trace_url else [])
     app.run(timeout=20)
     assert not app.exception and len(app.get("plotly_chart")) == 1
     # Relocating a run must not change its recorded original result on disk.
