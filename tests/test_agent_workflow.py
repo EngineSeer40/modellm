@@ -47,13 +47,19 @@ def workflow_case(tmp_path: Path, monkeypatch):
         return proposed
     monkeypatch.setattr(agents, 'analyse', fake_analyse)
 
-    def fake_interpret(spec, accepted, emit, tools, **kwargs):
-        record = tools.inspect_result(request=EvidenceRequest(kind='summary', group_by=['account_name'], aggregates={'total': EvidenceAggregate(function='sum', field='total_amount')}, order_by=[EvidenceSort(field='total', direction='desc')]).model_dump())
-        return AnalysisFinding(statements=[FindingStatement(template='{account} has the highest recorded amount ({amount}).', selected_rows={'top': EvidenceRowRef(evidence_id=record['id'], row_id=record['rows'][0]['row_id'])}, bindings={'account': FindingCell(row='top', column='account_name'), 'amount': FindingCell(row='top', column='total')})], caveats=[])
+    plot_requests = []
+
+    def fake_interpret(*args, **kwargs):
+        raise AssertionError('Finding is disabled and must not be invoked')
     monkeypatch.setattr(agents, 'interpret', fake_interpret)
-    monkeypatch.setattr(agents, 'plot', lambda *args, **kwargs: PlotSpec(function='bar', columns={'x': 'account_name', 'y': 'total_amount'}, filters=[], options={}))
+
+    def fake_plot(*args, original_request, **kwargs):
+        plot_requests.append(original_request)
+        return PlotSpec(function='bar', columns={'x': 'account_name', 'y': 'total_amount'}, filters=[], options={})
+    monkeypatch.setattr(agents, 'plot', fake_plot)
     return SimpleNamespace(paths=[accounts, events], root=tmp_path / 'runs',
-                           implementation_failures=implementation_failures, analysis_calls=analysis_calls)
+                           implementation_failures=implementation_failures, analysis_calls=analysis_calls,
+                           plot_requests=plot_requests)
 
 
 def test_uploaded_data_follows_agent_path_through_dbt_and_plot(workflow_case):
@@ -74,19 +80,20 @@ def test_uploaded_data_follows_agent_path_through_dbt_and_plot(workflow_case):
     assert set(result['model_names']) == {'dim_account', 'fact_events'}
     assert result['analysis_results'][0]['rows'] == 2
     assert result['plot_specs'][0]['function'] == 'bar'
+    assert result['findings'] == []
+    assert result['finding_attempts'] == []
+    assert result['evidence'] == []
+    assert not any(event['stage'] == 'analytical finding' for event in result['events'])
+    assert not any(agent['agent'] == 'Finding' for agent in result['usage']['agents'])
+    assert workflow_case.plot_requests == ['Compare accounts']
     assert [item['kind'] for item in result['events']].count('contract_check') >= 4
     assert (Path(result['run_dir']) / result['charts'][0]['file']).exists()
 
 
-@pytest.mark.parametrize('failure', ['finding', 'plotting', 'tracker'])
+@pytest.mark.parametrize('failure', ['plotting', 'tracker'])
 def test_failure_boundaries_preserve_attempts_and_terminal_records(workflow_case, monkeypatch, failure):
     calls = []
-    if failure == 'finding':
-        def reject_finding(*args):
-            calls.append('finding')
-            raise ValueError('Unbound finding evidence')
-        monkeypatch.setattr(workflow_module, 'render_finding', reject_finding)
-    elif failure == 'plotting':
+    if failure == 'plotting':
         def reject_plot(*args, **kwargs):
             calls.append('plotting')
             return PlotSpec(function='unsupported', columns={}, filters=[], options={})
@@ -98,16 +105,13 @@ def test_failure_boundaries_preserve_attempts_and_terminal_records(workflow_case
         monkeypatch.setattr(workflow_module, 'record_run', reject_ledger)
     events = []
     state = run(workflow_case.paths, 'Compare accounts', workflow_case.root, on_event=events.append)
-    assert state['status'] == ('complete' if failure == 'tracker' else 'failed')
+    assert state['status'] == 'complete'
     terminal = [event for event in state['events'] if event['stage'] == 'dashboard completion']
     assert len(terminal) == 1
-    assert terminal[0]['kind'] == ('done' if failure == 'tracker' else 'failure')
-    if failure == 'finding':
-        assert calls == ['finding', 'finding']
-        assert [attempt['status'] for attempt in state['finding_attempts']] == ['rejected', 'rejected']
-    elif failure == 'plotting':
+    assert terminal[0]['kind'] == 'done'
+    if failure == 'plotting':
         assert calls == ['plotting']  # Plot rejection has no extra repair invocation.
-        assert state['plot_attempts'][0]['status'] == 'rejected'
+        assert state['plot_attempts'][0]['status'] == 'skipped'
         assert not state['charts']
     else:
         assert calls == ['tracker', 'tracker']

@@ -44,7 +44,7 @@ def render_outcome(state: RunState):
         st.error(failure_message(state))
         st.caption(f"Run ID: {state['run_id']} · Diagnostics are in Technical Details; usage is shown on Results.")
     elif state["status"] == "complete":
-        st.success("Analysis completed. Your dashboard and supporting findings are ready.")
+        st.success("Analysis completed. Your dashboard is ready.")
     else:
         st.info("This run has not completed.")
 
@@ -91,6 +91,8 @@ def render_results(state: RunState | None):
         return
     run_dir = Path(state["run_dir"])
     analyses = state.get("analysis", {}).get("analyses", [])
+    for warning in state.get("quality_warnings", state.get("analysis", {}).get("warnings", [])):
+        st.warning(warning)
     concepts = list(dict.fromkeys(item.get("concept_id", item["title"]) for item in analyses))
     for concept in concepts:
         related = [(index, item) for index, item in enumerate(analyses)
@@ -99,7 +101,11 @@ def render_results(state: RunState | None):
         st.subheader(related[0][1]["title"])
         for index, analysis in related:
             charts = [chart for chart in state.get("charts", []) if chart["result_index"] == index]
-            if not charts:
+            skipped = [attempt for attempt in state.get("plot_attempts", [])
+                       if attempt.get("result_index") == index and attempt.get("status") == "skipped"]
+            for attempt in skipped:
+                st.warning(f"Chart skipped: {attempt['title']}. {attempt['error']}")
+            if not charts and not skipped:
                 charts = [{"title": analysis["title"], "file": f"chart_{index}.json"}]
             for chart in charts:
                 if len(charts) > 1 and chart["title"] != related[0][1]["title"]:
@@ -108,19 +114,20 @@ def render_results(state: RunState | None):
                 if path.exists():
                     st.plotly_chart(format_chart(pio.read_json(path)), width="stretch", key=f"chart_{state['run_id']}_{chart['file']}")
                 else:
-                    st.warning("This saved chart is unavailable. The findings and methodology remain below.")
+                    st.warning("This saved chart is unavailable. The methodology remains below.")
             findings = state.get("findings", [])
             finding = findings[index] if index < len(findings) else {}
             if finding.get("text"):
                 st.markdown("**Analysis Observations**")
                 st.table([{"Observation": " ".join(item.split())}
                           for item in finding_bullets(finding["text"])], hide_index=True)
-            with st.expander("Supporting evidence"):
-                for evidence in finding.get("evidence", []):
-                    st.caption(f"Evidence {evidence['id']}")
-                    st.dataframe(display_table([row.get("values", row) for row in evidence["rows"]]), hide_index=True, width="stretch")
-                    if evidence.get("truncated"):
-                        st.caption("This evidence preview is truncated; its selection is recorded in Technical Details.")
+            if finding.get("evidence"):
+                with st.expander("Supporting evidence"):
+                    for evidence in finding["evidence"]:
+                        st.caption(f"Evidence {evidence['id']}")
+                        st.dataframe(display_table([row.get("values", row) for row in evidence["rows"]]), hide_index=True, width="stretch")
+                        if evidence.get("truncated"):
+                            st.caption("This evidence preview is truncated; its selection is recorded in Technical Details.")
             with st.expander("Methodology"):
                 methodology = finding.get("methodology") or {
                     "question": analysis.get("question"), "population": analysis.get("population_definition"),

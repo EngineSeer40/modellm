@@ -7,6 +7,7 @@ import re
 from types import SimpleNamespace
 
 import duckdb
+import pandas as pd
 import pytest
 from pydantic import BaseModel, ValidationError
 from strands import Agent
@@ -19,13 +20,16 @@ from src.analysis import (
     accept_analyses,
 )
 from src.visualisation import (
-    render_plot, validate_plot_arguments,
+    accepted_result_plot_schema, plot_capabilities, plot_descriptions, render_plot,
+    validate_plot_arguments, validate_plot_spec,
 )
+from src.config import ReleaseSettings, use_settings
+from src.execution import use_budget
 from src.context_cost import COST_EXPERIMENT_STAGES, configured_cost_experiments, tool_result_offload_plugins
 from src.core.contracts import (
     AcceptedAnalysisResult, AnalysisFinding, AnalysisPlan, AnalysisSpec, AnalyticalPlan,
     EarlyValidatedAnalysisFinding, EvidenceRequest, FindingStatement, QueryDefinition,
-    PlotSpec, registered_plot_templates,
+    PlotSpec, ResultFilter, registered_plot_templates,
 )
 from src.tools.analysis_tools import DuckDBAnalysisTools
 from src.tools.result_tools import DuckDBResultTools, EvidenceRegistry, render_finding
@@ -126,16 +130,37 @@ def test_analysis_tool_selection_preserves_baseline_prompt(monkeypatch, analytic
     captured = []
     monkeypatch.setattr(agents, "invoke", lambda *args, **kwargs: captured.append((args, kwargs)))
     plan = AnalyticalPlan(business_processes=[], dimensions=[], facts=[], assumptions=[], unresolved_questions=[])
-    for controls in (frozenset(), frozenset({"small_analysis_previews"})):
-        agents.analyse("request", plan, {"fact_events": {"value": "INTEGER"}}, {}, lambda *a: None,
-                       tmp_path / "models.duckdb", cost_experiments=controls)
+    with use_settings(ReleaseSettings(max_analyses=5, max_charts=7)):
+        for controls in (frozenset(), frozenset({"small_analysis_previews"})):
+            agents.analyse("request", plan, {"fact_events": {"value": "INTEGER"}}, {}, lambda *a: None,
+                           tmp_path / "models.duckdb", cost_experiments=controls)
     assert captured[0][0][0] == captured[1][0][0]
     assert captured[0][0][4] == agents.ANALYSIS
     assert captured[1][0][4].endswith(agents.ANALYSIS_PREVIEW_GUIDANCE)
+    stable, repair = [json.loads(block["text"]) for block in captured[0][0][0]]
+    assert stable["limits"] == {"max_analyses": 5, "max_charts": 7}
+    assert stable["validated_schemas"] == {"fact_events": {"value": "INTEGER"}}
+    assert stable["available_plots"] == plot_descriptions()
+    assert set(stable["available_plots"]) == set(plot_capabilities())
+    assert repair == {"previous_analysis": None, "previous_acceptance_error": ""}
     first, second = [item[1]["tools"][-1].tool_spec for item in captured]
     assert first["name"] == second["name"] == "query_data"
     assert first["inputSchema"]["json"]["properties"]["limit"]["default"] == 500
     assert second["inputSchema"]["json"]["properties"]["limit"]["default"] == 20
+
+
+def test_analysis_repair_preserves_stable_cache_prefix(monkeypatch, analytical_spec, tmp_path):
+    captured = []
+    monkeypatch.setattr(agents, "invoke", lambda *args, **kwargs: captured.append(args))
+    plan = AnalyticalPlan(business_processes=[], dimensions=[], facts=[], assumptions=[], unresolved_questions=[])
+    previous = AnalysisPlan(analyses=[analytical_spec], qualifications=[], warnings=[])
+    args = ("request", plan, {"fact_events": {"value": "INTEGER"}}, {}, lambda *a: None,
+            tmp_path / "models.duckdb")
+    agents.analyse(*args)
+    agents.analyse(*args, previous=previous, feedback="Rejected query")
+    assert captured[0][0][0] == captured[1][0][0]
+    repair = json.loads(captured[1][0][1]["text"])
+    assert repair == {"previous_analysis": previous.model_dump(), "previous_acceptance_error": "Rejected query"}
 
 
 def test_small_preview_keeps_explicit_limits_and_complete_acceptance(tmp_path, analytical_spec):
@@ -192,10 +217,38 @@ def test_finding_schema_is_selected_only_when_enabled(monkeypatch, analytical_sp
     result = AcceptedAnalysisResult(result_id="result_00", relation=registry.relation, row_count=1,
                                     columns={"value": "INTEGER"}, profile=[])
     for controls in (frozenset(), frozenset({"early_finding_validation"})):
-        agents.interpret(analytical_spec, result, lambda *a: None, db, previous=finding, cost_experiments=controls)
+        agents.interpret(analytical_spec, result, lambda *a: None, db, executed_sql="SELECT * FROM fact_events",
+                         previous=finding, cost_experiments=controls)
     assert captured[0][1] is AnalysisFinding
     assert captured[1][1] is EarlyValidatedAnalysisFinding
     assert captured[0][0] == captured[1][0]
+
+
+def test_finding_receives_executed_definition_and_keeps_repair_outside_cache_prefix(
+    monkeypatch, analytical_spec, evidence_and_finding, tmp_path,
+):
+    registry, finding = evidence_and_finding
+    captured = []
+    monkeypatch.setattr(agents, "invoke", lambda *args, **kwargs: captured.append((args, kwargs)))
+    db = DuckDBResultTools(tmp_path / "models.duckdb", registry.relation, {"value": "INTEGER"}, registry=registry)
+    result = AcceptedAnalysisResult(result_id="result_00", relation=registry.relation, row_count=1,
+                                    columns={"value": "INTEGER"}, profile=[])
+    sql = "WITH __modellm_population AS (SELECT * FROM fact_events) SELECT * FROM __modellm_population"
+    agents.interpret(analytical_spec, result, lambda *a: None, db, executed_sql=sql)
+    registry.register(EvidenceRequest(kind="rows", fields=["value"]),
+                      [{"value": 15}], {"value": "INTEGER"}, False, False)
+    agents.interpret(analytical_spec, result, lambda *a: None, db, executed_sql=sql,
+                     previous=finding, feedback="Missing evidence binding")
+    assert captured[0][0][0][0] == captured[1][0][0][0]
+    stable, repair = [json.loads(block["text"]) for block in captured[1][0][0]]
+    assert stable["executed_sql"] == sql
+    assert stable["visualisation_goal"] == analytical_spec.visualisation_goal
+    assert stable["result"] == result.model_dump()
+    assert "registered_evidence" not in stable
+    assert repair["registered_evidence"] == registry.snapshot()
+    assert repair["previous_finding"] == finding.model_dump()
+    assert repair["previous_finding_error"] == "Missing evidence binding"
+    assert [tool.tool_name for tool in captured[1][1]["tools"]] == ["inspect_result"]
 
 
 def test_sdk_corrects_shape_in_same_conversation(evidence_and_finding):
@@ -362,14 +415,15 @@ def test_plot_prompt_lists_live_registry_once(monkeypatch, analytical_spec, tmp_
 
     captured = {}
     def invoke(prompt, *args, **kwargs):
-        captured.update(json.loads(prompt))
+        captured.update(json.loads(prompt[0]["text"]))
     monkeypatch.setattr(agents, "invoke", invoke)
     pio.templates["test_registered_template"] = pio.templates["plotly_white"]
     try:
         agents.plot(analytical_spec, AcceptedAnalysisResult(
             result_id="result_00", relation='analysis."result_00"', row_count=1,
             columns={"value": "INTEGER"}, profile=[],
-        ), {"text": "Recorded values", "evidence": []}, lambda *args: None, tmp_path / "models.duckdb")
+        ), lambda *args: None, tmp_path / "models.duckdb",
+                    original_request="Map the recorded values", frame=pd.DataFrame({"value": [1]}))
         assert captured["renderer_templates"] == registered_plot_templates()
         assert "test_registered_template" in captured["renderer_templates"]
         assert "plotly_light" not in captured["renderer_templates"]
@@ -400,3 +454,149 @@ def test_sdk_corrects_plot_template_then_renders_without_fresh_invocation():
     assert len(render_plot(frame, PlotSpec.model_validate({**good, "options": {}}), "Store map").data) == 1
     with pytest.raises(ValueError, match="Unknown Plotly template"):
         validate_plot_arguments(plot.model_copy(update={"options": bad["options"]}))
+
+
+@pytest.mark.parametrize(("defect", "error"), [
+    ("column", "missing accepted-result column: color=variable"),
+    ("argument", "Unsupported plot column argument for line: orientation"),
+    ("filter", "Plot filters must equal the supplied presentation selection"),
+    ("template", "Unknown Plotly template: 'plotly_light'"),
+])
+def test_plot_agent_corrects_result_contract_inside_one_budgeted_invocation(
+    monkeypatch, analytical_spec, tmp_path, defect, error,
+):
+    import pandas as pd
+    import strands.models
+
+    good = {"function": "line", "columns": {"x": ["mean_reading", "p75_reading"], "y": "position"},
+            "filters": [], "options": {"orientation": "h"}}
+    bad = copy.deepcopy(good)
+    if defect == "column": bad["columns"]["color"] = "variable"
+    elif defect == "argument": bad["columns"]["orientation"] = "h"
+    elif defect == "filter": bad["filters"] = [{"field": "position", "operator": "eq", "values": [1]}]
+    else: bad["options"]["template"] = "plotly_light"
+    models, configs = [], []
+
+    class FakeBedrockModel(LocalModel):
+        def __init__(self, **kwargs):
+            configs.append(kwargs)
+            super().__init__([("AcceptedResultPlotSpec", bad), ("AcceptedResultPlotSpec", good)])
+            self.client = SimpleNamespace(meta=SimpleNamespace(region_name=kwargs["region_name"]))
+            models.append(self)
+
+    monkeypatch.setattr(strands.models, "BedrockModel", FakeBedrockModel)
+    result = AcceptedAnalysisResult(result_id="result_00", relation='analysis."result_00"', row_count=2,
+        columns={"position": "DOUBLE", "mean_reading": "DOUBLE", "p75_reading": "DOUBLE"}, profile=[])
+    settings = ReleaseSettings(max_model_calls=2)
+    events = []
+    frame = pd.DataFrame({"position": [1, 2], "mean_reading": [2, 3], "p75_reading": [3, 4]})
+    with use_settings(settings), use_budget(settings) as budget:
+        plot = agents.plot(analytical_spec, result,
+                           lambda *e: events.append(e), tmp_path / "models.duckdb",
+                           original_request="Compare mean and upper-quartile readings", frame=frame)
+        assert budget.calls == 2
+    assert len(models) == 1
+    assert len(models[0].requests) == 2
+    assert error in json.dumps(models[0].requests[1])
+    assert configs[0]["model_id"] == settings.plotting_model_id
+    assert "cache_config" in configs[0]
+    assert len([e for e in events if e[1] == "model_call" and e[3]["status"] == "started"]) == 1
+    assert plot.model_dump() == good
+    frame = pd.DataFrame({"position": [1, 2], "mean_reading": [2, 3], "p75_reading": [3, 4]})
+    assert len(render_plot(frame, plot, "Reading profile").data) == 2
+    # The final workflow guard still catches contracts bypassed with model_copy/construct.
+    with pytest.raises(ValueError, match=re.escape(error)):
+        validate_plot_spec(plot.model_copy(update=bad), result)
+
+
+def test_scoped_plot_schemas_preserve_fields_and_isolate_result_and_selection():
+    first = AcceptedAnalysisResult(result_id="first", relation='analysis."first"', row_count=1,
+                                   columns={"value": "DOUBLE", "variant": "VARCHAR"}, profile=[])
+    second = first.model_copy(update={"result_id": "second", "columns": {"other": "DOUBLE"}})
+    selection = [ResultFilter(field="variant", operator="eq", values=["daily"])]
+    first_schema = accepted_result_plot_schema(first, selection,
+        frame=pd.DataFrame({"value": [1], "variant": ["daily"]}))
+    second_schema = accepted_result_plot_schema(second, frame=pd.DataFrame({"other": [2]}))
+    assert first_schema.model_json_schema() == second_schema.model_json_schema()
+    assert set(first_schema.model_fields) == set(PlotSpec.model_fields)
+    payload = {"function": "bar", "columns": {"y": "value"},
+               "filters": [item.model_dump() for item in selection], "options": {}}
+    selection[0].values[0] = "monthly"
+    assert first_schema.model_validate(payload).model_dump() == payload
+    assert second_schema.model_validate({"function": "bar", "columns": {"y": "other"},
+                                         "filters": [], "options": {}})
+    with pytest.raises(ValidationError, match="missing accepted-result column"):
+        second_schema.model_validate({**payload, "filters": []})
+    assert first_schema.model_validate(payload)
+
+
+@pytest.fixture
+def plotting_model(monkeypatch):
+    import strands.models
+
+    def configure(submissions):
+        instances = []
+
+        class FakeBedrockModel(LocalModel):
+            def __init__(self, **kwargs):
+                super().__init__(submissions)
+                self.client = SimpleNamespace(meta=SimpleNamespace(region_name=kwargs['region_name']))
+                instances.append(self)
+
+        monkeypatch.setattr(strands.models, 'BedrockModel', FakeBedrockModel)
+        return instances
+
+    return configure
+
+
+def test_plot_heals_render_failure_without_changing_nullable_data(plotting_model, analytical_spec, tmp_path):
+    frame = pd.DataFrame({'position': [1, 2, 3], 'reading': [10.0, None, 30.0]})
+    original = frame.copy(deep=True)
+    result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
+        row_count=3, columns={'position': 'INTEGER', 'reading': 'DOUBLE'}, profile=[])
+    bad = {'function': 'scatter', 'columns': {'x': 'position', 'y': 'reading', 'size': 'reading'},
+           'filters': [], 'options': {}}
+    good = {**bad, 'columns': {'x': 'position', 'y': 'reading', 'color': 'reading'}}
+    instances = plotting_model([('AcceptedResultPlotSpec', bad), ('AcceptedResultPlotSpec', good)])
+    events = []
+    settings = ReleaseSettings(max_model_calls=4)
+    with use_settings(settings), use_budget(settings) as budget:
+        plot = agents.plot(analytical_spec, result, lambda *e: events.append(e), tmp_path / 'models.duckdb',
+                           original_request='Explore the readings', frame=frame)
+        assert budget.calls == 2
+    assert len(instances) == 1
+    assert "Invalid element(s) received for the 'size' property" in json.dumps(instances[0].requests[1])
+    assert 'cachePoint' in instances[0].requests[0][0]['content'][1]
+    assert plot.model_dump() == good
+    pd.testing.assert_frame_equal(frame, original)
+
+
+def test_plot_turn_limit_stops_uncorrectable_proposals(plotting_model, analytical_spec, tmp_path):
+    bad = {'function': 'scatter', 'columns': {'x': 'missing'}, 'filters': [], 'options': {}}
+    instances = plotting_model([('AcceptedResultPlotSpec', bad)] * 5)
+    result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
+        row_count=1, columns={'value': 'INTEGER'}, profile=[])
+    events = []
+    settings = ReleaseSettings(max_model_calls=10)
+    with use_settings(settings), use_budget(settings) as budget:
+        with pytest.raises(agent_runtime.InvocationLimitError, match='limit_turns'):
+            agents.plot(analytical_spec, result, lambda *e: events.append(e), tmp_path / 'models.duckdb',
+                        original_request='Explore the values', frame=pd.DataFrame({'value': [1]}))
+        assert budget.calls == 4
+    assert len(instances[0].requests) == 4
+    assert events[-1][3]['category'] == 'invocation_limit'
+
+
+def test_global_budget_is_not_local_plot_exhaustion(plotting_model, analytical_spec, tmp_path):
+    from strands.types.exceptions import EventLoopException
+
+    bad = {'function': 'scatter', 'columns': {'x': 'missing'}, 'filters': [], 'options': {}}
+    instances = plotting_model([('AcceptedResultPlotSpec', bad)] * 5)
+    result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
+        row_count=1, columns={'value': 'INTEGER'}, profile=[])
+    settings = ReleaseSettings(max_model_calls=1)
+    with use_settings(settings), use_budget(settings):
+        with pytest.raises(EventLoopException, match='Internal model calls exceeds'):
+            agents.plot(analytical_spec, result, lambda *e: None, tmp_path / 'models.duckdb',
+                        original_request='Explore the values', frame=pd.DataFrame({'value': [1]}))
+    assert len(instances[0].requests) == 1

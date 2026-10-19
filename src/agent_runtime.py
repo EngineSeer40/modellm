@@ -19,6 +19,10 @@ from .context_cost import COST_EXPERIMENT_STAGES, configured_cost_experiments, t
 T = TypeVar("T", bound=BaseModel)
 
 
+class InvocationLimitError(RuntimeError):
+    """The SDK exhausted a local invocation limit, not the shared run budget."""
+
+
 def configured_model_id(stage: str | None = None) -> str:
     settings = current_settings()
     return settings.plotting_model_id if stage == "visualisation generation" else settings.model_id
@@ -48,6 +52,7 @@ async def _invoke(
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
     context_directory: Path | None = None,
+    limits: dict[str, int] | None = None,
 ) -> T:
     from botocore.config import Config
     from strands import Agent
@@ -99,6 +104,7 @@ async def _invoke(
         "cost_experiments": sorted(name for name in experiments if COST_EXPERIMENT_STAGES[name] == stage),
         "strands_version": version("strands-agents"),
         "context_directory": str(offload_directory) if plugins else None,
+        "limits": limits,
     }
     emit(stage, "model_call", f"Calling {model_id}", {
         "call_id": call_id, "model_id": model_id, "status": "started",
@@ -132,7 +138,8 @@ async def _invoke(
         last_flush = time.monotonic()
 
     try:
-        async for event in agent.stream_async(prompt, structured_output_model=schema):
+        async for event in agent.stream_async(prompt, structured_output_model=schema,
+                                            **({"limits": limits} if limits is not None else {})):
             if event.get("reasoningText"):
                 streamed["reasoning"] += event["reasoningText"]
                 reasoning_seen = True
@@ -186,6 +193,14 @@ async def _invoke(
               "status": "failed", "tool_calls": len(seen_tools)})
         raise
     flush_stream()
+    if final is not None and str(getattr(final, "stop_reason", "")).startswith("limit_"):
+        error = f"{stage} exhausted its local invocation limit: {final.stop_reason} ({limits})"
+        emit(stage, "model_failure", error, {
+            "call_id": call_id, "model_id": model_id, "category": "invocation_limit",
+            "status": "failed", "limits": limits,
+            "elapsed_seconds": time.monotonic() - started, "tool_calls": len(seen_tools),
+        })
+        raise InvocationLimitError(error)
     if final is None or final.structured_output is None:
         error = f"{stage} returned no structured output"
         emit(stage, "model_failure", error, {
@@ -220,6 +235,8 @@ def invoke(
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
     context_directory: Path | None = None,
+    limits: dict[str, int] | None = None,
 ) -> T:
     return asyncio.run(_invoke(prompt, schema, stage, emit, system_prompt, tools,
-                              cost_experiments=cost_experiments, context_directory=context_directory, trace_attributes=trace_attributes))
+                              cost_experiments=cost_experiments, context_directory=context_directory,
+                              trace_attributes=trace_attributes, limits=limits))

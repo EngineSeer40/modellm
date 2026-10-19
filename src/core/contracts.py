@@ -227,7 +227,7 @@ class AnalysisDimension(Contract):
     semantic_type: Literal[
         "temporal", "categorical", "ordinal", "geographic", "identifier", "other"
     ]
-    description: str
+    description: str = Field(description="Meaning of the returned dimension, including bin boundaries, centres or time grain where relevant")
 
 
 class RatioComponents(Contract):
@@ -248,7 +248,7 @@ class AnalysisMeasure(Contract):
         "numeric",
         "other",
     ]
-    description: str
+    description: str = Field(description="Quantity represented by this column, its known unit and calculation basis, such as a total, average, count or rate")
     additivity: Literal["additive", "semi_additive", "non_additive"]
     components: RatioComponents | None = None
 
@@ -288,20 +288,20 @@ class AnalysisSpec(Contract):
     question: str
     query: QueryDefinition
     concept_id: str = Field(
-        min_length=1, description="Groups related views of one analytical concept"
+        min_length=1, description="Groups related analyses of one concept in the dashboard; does not itself create figures"
     )
-    population_definition: str = Field(min_length=1, description="Actual output population, filters and denominator policy for this view; distinguish it from the base qualification when applicable")
-    observation_rule: str | None = Field(description="Actual request-specific observation rule applied in this view; explicitly null only when no additional rule applies")
+    population_definition: str = Field(min_length=1, description="Who or what is included after qualification and query filters, including denominator scope where relevant")
+    observation_rule: str | None = Field(description="Observation, calculation or grouping rules applied in this result; null when no additional rule applies")
     variant_field: str | None = Field(
         default=None,
-        description="Exact result column distinguishing alternate representations of the same concept within one result; null otherwise. Ordinary grouping categories, dates or months are not selectors merely because their values vary.",
+        description="Exact result column whose values identify alternate views. Each distinct value, including a null-valued group, creates a separate figure from matching rows. Selects rows, not measure columns or individual readings. Leave variant_field null to render the result once.",
     )
-    rationale: str = Field(description="Why these transformations answer the question")
+    rationale: str = Field(description="Why the chosen analytical method answers the question; its justification, not anticipated findings")
     grain: str = Field(description="What one result row represents")
     dimensions: list[AnalysisDimension]
     measures: list[AnalysisMeasure]
     visualisation_goal: str = Field(
-        description="Comparison, relationship or pattern the result should communicate; no chart types, traces, axes or overlay instructions"
+        description="Comparison, relationship or pattern this result should communicate about the question; guidance for Plotting's choice of encoding"
     )
 
 
@@ -311,7 +311,7 @@ class AnalysisPlan(Contract):
         description="Shared populations used by qualified queries; otherwise an empty list"
     )
     warnings: list[str] = Field(
-        description="Analytical assumptions/limitations, or an empty list"
+        description="Analytical assumptions and remaining data limitations; empty list if none"
     )
 
 
@@ -407,7 +407,7 @@ class FindingCell(Contract):
 class FindingStatement(Contract):
     template: str = Field(
         min_length=1,
-        description="Outcome text with simple {placeholders}. Bind observed values/dates/labels to evidence; constants from the supplied analytical definition may appear in prose. Evidence must match the claimed population: a subgroup row is not an overall total.",
+        description="Outcome text with simple {placeholders}. Bind observed values/dates/labels to evidence; comparisons bind relevant endpoints and labels. Quantitative changes/factors, including verbal multipliers, require returned evidence, not arithmetic invented in prose. Supplied methodology constants may appear in prose. Evidence must match the claimed population: a subgroup row is not an overall total.",
     )
     selected_rows: dict[str, EvidenceRowRef] = Field(
         description="Alias to stored evidence row. Every selected alias must be used by at least one binding in this statement; do not include unused context rows. Bind relevant labels and values for each cited row.",
@@ -420,7 +420,7 @@ class FindingStatement(Contract):
 class AnalysisFinding(Contract):
     statements: list[FindingStatement] = Field(min_length=1)
     caveats: list[str] = Field(
-        description="Limitations and supplied methodology only; no new unbound observed numerical claims, populations or business calculations. Report observed values through bound statements. Empty list if none."
+        description="Residual limitations and supplied methodology after selecting valid claims; never an excuse for a false statement. No new unbound observed numerical claims, populations or business calculations. Report observed values through bound statements. Empty list if none."
     )
 
 

@@ -1,5 +1,8 @@
 """Plot selection should receive result meaning and statistics, not sample rows."""
 import json
+import pandas as pd
+import pytest
+from pydantic import ValidationError
 from src import agents
 from src.core.contracts import AcceptedAnalysisResult, AnalysisDimension, AnalysisMeasure, AnalysisSpec, PlotSpec, ResultColumnProfile, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell
 
@@ -9,11 +12,23 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
     captured = {}
 
     def fake_invoke(prompt, schema, stage, emit, system_prompt, tools=None, **kwargs):
-        captured['payload'] = json.loads(prompt)
+        captured['blocks'] = prompt
+        captured['payload'] = {key: value for block in prompt for key, value in json.loads(block['text']).items()}
+        captured['schema'] = schema
+        captured['limits'] = kwargs['limits']
         return PlotSpec(function='line', columns={'x': 'event_day', 'y': 'event_count'}, filters=[], options={})
     monkeypatch.setattr(agents, 'invoke', fake_invoke)
-    agents.plot(spec, result, {'text': 'Both cohorts contribute events.', 'evidence': []}, lambda *args: None, tmp_path / 'modellm.duckdb')
+    request = 'Show the daily pattern for both cohorts as a multiple-line chart.'
+    agents.plot(spec, result, lambda *args: None,
+                tmp_path / 'modellm.duckdb', original_request=request,
+                frame=pd.DataFrame({'event_day': ['2026-01-01'], 'cohort': ['A'], 'event_count': [1]}))
     payload = captured['payload']
+    assert payload['original_request'] == request
+    assert payload['visualisation_goal'] == spec.visualisation_goal
+    assert 'finding' not in payload
+    assert 'evidence' not in payload
+    with pytest.raises(ValidationError, match='missing accepted-result column'):
+        captured['schema'].model_validate({'function': 'line', 'columns': {'x': 'event_day', 'y': 'event_count', 'color': 'variable'}, 'filters': [], 'options': {}})
     assert 'sample_rows' not in json.dumps(payload)
     assert 'main.fact_events' not in json.dumps(payload)
     result_context = payload['analytical_result']
@@ -21,3 +36,12 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
     assert 'dimensions' in result_context
     assert 'measures' in result_context
     assert 'grain' in result_context
+    assert captured['limits'] == {'turns': 4}
+    shared = captured['blocks'][0]
+    schema = captured['schema'].model_json_schema()
+    agents.plot(spec.model_copy(update={'title': 'Another chart', 'question': 'Another question'}),
+                result, lambda *args: None, tmp_path / 'modellm.duckdb', original_request='Another request',
+                frame=pd.DataFrame({'event_day': ['2026-01-02'], 'cohort': ['B'], 'event_count': [2]}))
+    assert captured['blocks'][0] == shared
+    assert captured['schema'].model_json_schema() == schema
+    assert set(json.loads(shared['text'])) == {'renderer_capabilities', 'renderer_templates'}

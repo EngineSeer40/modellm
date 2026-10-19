@@ -18,8 +18,9 @@ from .analysis import (
     AnalysisAcceptanceError, analysis_statement, accept_analyses, load_result_frame, result_metrics, summarize_models,
 )
 from .visualisation import (
-    render_plot, validate_plot_spec, representation_selections,
+    PlotValidationError, validate_plot_candidate, representation_selections,
 )
+from .agent_runtime import InvocationLimitError
 from .modelling_validation import plan_issues, validate_built_models
 from .core.contracts import (
     CONTRACT_VERSION, AcceptedAnalysisResult, AnalysisPlan, AnalysisSpec, AnalyticalPlan, DbtImplementation,
@@ -99,7 +100,11 @@ def _run(paths: list[Path], request: str, workspace: RunWorkspace, *, on_event: 
         plan = _build_conceptual_model(record, request, names, profiles, links, cost_experiments)
         model_names = _build_models(record, names, plan, profiles, links, cost_experiments)
         analysis, accepted_results = _accept_analysis(record, request, plan, model_names, cost_experiments)
-        _generate_findings(record, accepted_results, cost_experiments)
+        # Finding is disabled pending removal; keep its implementation and saved-run fields.
+        state["findings"] = []
+        state["finding_attempts"] = []
+        state["evidence"] = []
+        # _generate_findings(record, accepted_results, cost_experiments)
         _render_visualisations(record, accepted_results, cost_experiments)
         state["quality_warnings"] = (
             [
@@ -499,6 +504,7 @@ def _generate_findings(record: RunRecord, accepted_results: AcceptedResults,
             with stage_span(record.workspace.run_id, "analytical finding", attempt=attempt + 1, result_index=result_index) as trace_attributes:
                 finding = agents.interpret(
                     spec, accepted_result, emit, result_tools, feedback=finding_error, previous=finding,
+                    executed_sql=state["analysis_results"][result_index]["executed_sql"],
                     cost_experiments=cost_experiments,
                     trace_attributes=trace_attributes,
                 )
@@ -573,31 +579,35 @@ def _render_visualisations(record: RunRecord, accepted_results: AcceptedResults,
                 {"relation": accepted_result.relation, "row_count": 0},
             )
             continue
+        frame = load_result_frame(database, accepted_result)
         for variant_index, (label, selection) in enumerate(representation_selections(database, spec, accepted_result)):
             with stage_span(record.workspace.run_id, "visualisation generation", result_index=index) as trace_attributes:
                 title = spec.title if label is None else f"{spec.title} — {label}"
                 check_limit(len(state["charts"]) + 1, settings.max_charts, "Chart count")
-                plot = agents.plot(spec, accepted_result, state["findings"][index], emit, database,
-                                   selection=selection, cost_experiments=cost_experiments, trace_attributes=trace_attributes)
+                plot = None
                 try:
-                    validate_plot_spec(plot, accepted_result, selection)
-                    frame = load_result_frame(database, accepted_result)
-                    fig = render_plot(frame, plot, title)
-                    filename = f"chart_{index}_{variant_index}.json"
-                    fig.write_json(run_dir / filename)
-                    state["charts"].append({"result_index": index, "concept_id": spec.concept_id,
-                                            "title": title, "file": filename})
-                except Exception as exc:
+                    plot = agents.plot(spec, accepted_result, emit, database,
+                                       selection=selection, original_request=state["request"],
+                                       frame=frame, title=title,
+                                       cost_experiments=cost_experiments, trace_attributes=trace_attributes)
+                    fig = validate_plot_candidate(frame, plot, accepted_result, selection, title)
+                except (InvocationLimitError, PlotValidationError) as exc:
                     state["plot_attempts"].append(
-                        {"title": title, "status": "rejected", "plot": plot.model_dump(),
+                        {"title": title, "status": "skipped", "result_index": index,
+                         "concept_id": spec.concept_id, "relation": accepted_result.relation,
+                         "plot": plot.model_dump() if plot is not None else None,
                          "presentation_selection": [f.model_dump() for f in selection],
                          "error": f"{type(exc).__name__}: {exc}"}
                     )
-                    emit("visualisation generation", "failure", f"Plot failed for {title}: {type(exc).__name__}: {exc}",
+                    emit("visualisation generation", "failure", f"Chart skipped for {title}: {type(exc).__name__}: {exc}",
                          {"relation": accepted_result.relation,
                           "presentation_selection": [f.model_dump() for f in selection],
-                          "plot": plot.model_dump()})
-                    raise
+                          "plot": plot.model_dump() if plot is not None else None})
+                    continue
+                filename = f"chart_{index}_{variant_index}.json"
+                fig.write_json(run_dir / filename)
+                state["charts"].append({"result_index": index, "concept_id": spec.concept_id,
+                                        "title": title, "file": filename})
                 state["plot_attempts"].append(
                     {"title": title, "status": "accepted", "plot": plot.model_dump()}
                 )

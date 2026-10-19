@@ -2,6 +2,7 @@ import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+import pandas as pd
 from opentelemetry.util.types import AttributeValue
 
 from src.core.prompt import ANALYSIS, ANALYSIS_FINDING, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
@@ -23,7 +24,8 @@ from .core.contracts import (
     ValidationIssue,
     registered_plot_templates,
 )
-from .visualisation import plot_capabilities
+from .config import current_settings
+from .visualisation import accepted_result_plot_schema, plot_capabilities, plot_descriptions
 from .agent_runtime import invoke
 from .context_cost import (
     configured_cost_experiments,
@@ -104,17 +106,24 @@ def analyse(
     experiments = configured_cost_experiments(cost_experiments)
     db = DuckDBAnalysisTools(database, list(model_schemas))
     small_previews = "small_analysis_previews" in experiments
+    settings = current_settings()
 
-    prompt = json.dumps(
+    prompt = split_stable_and_repair_context(
         {
             "request": request,
             "analytical_plan": plan.model_dump(),
             "validated_schemas": model_schemas,
             "model_summaries": summaries,
+            "available_plots": plot_descriptions(),
+            "limits": {
+                "max_analyses": settings.max_analyses,
+                "max_charts": settings.max_charts,
+            },
+        },
+        {
             "previous_analysis": previous.model_dump() if previous else None,
             "previous_acceptance_error": feedback,
         },
-        default=str,
     )
     result = invoke(
         prompt,
@@ -142,11 +151,12 @@ def interpret(
     feedback: str = "",
     previous: AnalysisFinding | None = None,
     *,
+    executed_sql: str,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
 ) -> AnalysisFinding:
     experiments = configured_cost_experiments(cost_experiments)
-    prompt = json.dumps(
+    prompt = split_stable_and_repair_context(
         {
             "title": spec.title,
             "question": spec.question,
@@ -158,12 +168,15 @@ def interpret(
             "dimensions": [item.model_dump() for item in spec.dimensions],
             "measures": [item.model_dump() for item in spec.measures],
             "variant_field": spec.variant_field,
+            "visualisation_goal": spec.visualisation_goal,
+            "executed_sql": executed_sql,
             "result": result.model_dump(),
+        },
+        {
             "previous_finding_error": feedback,
             "previous_finding": previous.model_dump() if previous else None,
             "registered_evidence": db.registry.snapshot(),
         },
-        default=str,
     )
     return invoke(
         prompt,
@@ -180,11 +193,13 @@ def interpret(
 def plot(
     spec: AnalysisSpec,
     result: AcceptedAnalysisResult,
-    finding: dict,
     emit: Callable,
     database: Path,
     selection: list[ResultFilter] | None = None,
     *,
+    original_request: str,
+    frame: pd.DataFrame,
+    title: str | None = None,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
 ) -> PlotSpec:
@@ -195,17 +210,19 @@ def plot(
         columns=set(result.columns),
     )
 
-    prompt = json.dumps(
+    prompt = split_stable_and_repair_context(
+        {
+            "renderer_capabilities": plot_capabilities(),
+            "renderer_templates": registered_plot_templates(),
+        },
         {
             "title": spec.title,
             "question": spec.question,
-            "finding": finding,
+            "original_request": original_request,
             "concept_id": spec.concept_id,
             "variant_field": spec.variant_field,
             "presentation_selection": [item.model_dump() for item in (selection or [])],
             "visualisation_goal": spec.visualisation_goal,
-            "renderer_capabilities": plot_capabilities(),
-            "renderer_templates": registered_plot_templates(),
             "analytical_result": {
                 "grain": spec.grain,
                 "dimensions": [item.model_dump() for item in spec.dimensions],
@@ -215,12 +232,11 @@ def plot(
                 "profile": [item.model_dump() for item in result.profile],
             },
         },
-        default=str,
     )
 
     return invoke(
         prompt,
-        PlotSpec,
+        accepted_result_plot_schema(result, selection, frame=frame, title=title or spec.title),
         "visualisation generation",
         emit,
         PLOTTING,
@@ -229,4 +245,5 @@ def plot(
         ],
         cost_experiments=cost_experiments,
         trace_attributes=trace_attributes,
+        limits={"turns": 4},
     )

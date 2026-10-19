@@ -130,6 +130,8 @@ def render_timeline(state: RunState | RunProgress):
     phases = project_progress(events, state.get("status", "running"))
     for index, phase in enumerate(phases):
         phase_events = [e for e in events if STAGE_PHASE.get(e.get("stage")) == index]
+        if index == STAGE_PHASE["analytical finding"] and not phase_events:
+            continue
         label = "Running" if phase["status"] in {"repairing", "checking"} else phase["status"].capitalize()
         title = "Building data models" if index == 3 else phase["label"]
         with st.expander(f"{title} · {label}", expanded=phase["status"] != "pending"):
