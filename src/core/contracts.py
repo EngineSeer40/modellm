@@ -227,7 +227,7 @@ class AnalysisDimension(Contract):
     semantic_type: Literal[
         "temporal", "categorical", "ordinal", "geographic", "identifier", "other"
     ]
-    description: str = Field(description="Meaning of the returned dimension, including bin boundaries, centres or time grain where relevant")
+    description: str = Field(description="Meaning of this returned column, including known units, coordinate system, bin boundaries or time grain where relevant; not a chart channel or expected finding")
 
 
 class RatioComponents(Contract):
@@ -248,7 +248,7 @@ class AnalysisMeasure(Contract):
         "numeric",
         "other",
     ]
-    description: str = Field(description="Quantity represented by this column, its known unit and calculation basis, such as a total, average, count or rate")
+    description: str = Field(description="Quantity represented by this returned column, its known unit and calculation basis, such as a total, average, count or rate; not a chart channel or expected finding")
     additivity: Literal["additive", "semi_additive", "non_additive"]
     components: RatioComponents | None = None
 
@@ -284,26 +284,25 @@ class QueryDefinition(Contract):
 
 
 class AnalysisSpec(Contract):
-    title: str
-    question: str
+    title: str = Field(description="Display name for this analytical result; do not promise a chart type or transformation the result cannot support")
+    question: str = Field(description="Specific analytical question answered by this result, distinct from the broader original request")
     query: QueryDefinition
     concept_id: str = Field(
         min_length=1, description="Groups related analyses of one concept in the dashboard; does not itself create figures"
     )
     population_definition: str = Field(min_length=1, description="Who or what is included after qualification and query filters, including denominator scope where relevant")
-    observation_rule: str | None = Field(description="Observation, calculation or grouping rules applied in this result; null when no additional rule applies")
+    observation_rule: str | None = Field(description="Quality, calculation or grouping rules beyond the stated population and row grain; null when no additional rule applies")
     variant_field: str | None = Field(
         default=None,
         description="Exact result column whose values identify alternate views. Each distinct value, including a null-valued group, creates a separate figure from matching rows. Selects rows, not measure columns or individual readings. Leave variant_field null to render the result once.",
     )
-    rationale: str = Field(description="Why the chosen analytical method answers the question; its justification, not anticipated findings")
+    rationale: str = Field(description="Why the SQL method answers the question; not a chart plan, renderer claim or anticipated finding")
     grain: str = Field(description="What one result row represents")
     dimensions: list[AnalysisDimension]
     measures: list[AnalysisMeasure]
     visualisation_goal: str = Field(
-        description="Comparison, relationship or pattern this result should communicate about the question; guidance for Plotting's choice of encoding"
+        description="Comparison, relationship or pattern the returned rows can communicate; presentation intent for Plotting, not a chart function, visual channel, uncomputed transformation or anticipated finding"
     )
-
 
 class AnalysisPlan(Contract):
     analyses: list[AnalysisSpec] = Field(min_length=1)
@@ -311,7 +310,7 @@ class AnalysisPlan(Contract):
         description="Shared populations used by qualified queries; otherwise an empty list"
     )
     warnings: list[str] = Field(
-        description="Analytical assumptions and remaining data limitations; empty list if none"
+        description="User-facing analytical assumptions and remaining limitations; not instructions to Plotting. Empty list if none"
     )
 
 
@@ -505,15 +504,15 @@ def validate_plot_template(options: dict) -> None:
 
 
 class PlotSpec(Contract):
-    function: str = Field(description="One Plotly Express function supported by the supplied renderer_capabilities")
+    function: str = Field(description="One Plotly Express function listed in available_plots whose meaning fits the accepted result")
     columns: dict[str, Any] = Field(
-        description="Supported column argument from renderer_capabilities to an exact accepted field name, or a supported list of exact names; no data arrays or presentation settings"
+        description="Plotly Express column arguments for the chosen function, mapped to exact accepted field names or supported lists of names; no data arrays or presentation settings"
     )
     filters: list[ResultFilter] = Field(
         description="Exactly the supplied presentation_selection, with no additional population filters; empty list when none is supplied"
     )
     options: dict[str, Any] = Field(
-        description="Supported presentation options from renderer_capabilities, such as orientation=h; template must be a registered name from renderer_templates. Never field references or data arrays. Empty object if none."
+        description="Plotly Express presentation options supported by the chosen function, such as orientation=h; template must be a registered name from renderer_templates. Never field references or data arrays. Empty object if none."
     )
 
     @model_validator(mode="after")

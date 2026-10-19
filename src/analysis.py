@@ -46,8 +46,11 @@ def accept_analyses(
     database: Path,
     model_names: list[str],
     analysis: AnalysisPlan,
+    *,
+    max_charts: int | None = None,
 ) -> list[tuple[AnalysisSpec, AcceptedAnalysisResult]]:
     accepted: list[tuple[AnalysisSpec, AcceptedAnalysisResult]] = []
+    planned_charts = 0
 
     try:
         ids = [q.qualification_id for q in analysis.qualifications]
@@ -88,6 +91,19 @@ def accept_analyses(
                         profile=profile_rows,
                     )
                     validate_result_semantics(spec, accepted_result)
+                    if max_charts is not None:
+                        views = 1
+                        if spec.variant_field and row_count:
+                            field = '"' + spec.variant_field.replace('"', '""') + '"'
+                            views = con.execute(
+                                f"SELECT count(*) FROM (SELECT DISTINCT {field} FROM {relation})"
+                            ).fetchone()[0]
+                        planned_charts += views
+                        if planned_charts > max_charts:
+                            raise ValueError(
+                                f"The analyses request {planned_charts} figures, exceeding the chart limit "
+                                f"of {max_charts}; variant_field selects distinct row values, not measure columns"
+                            )
                     accepted.append((spec, accepted_result))
                 except Exception as exc:
                     raise AnalysisAcceptanceError(index, spec.title, exc) from exc

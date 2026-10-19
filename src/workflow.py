@@ -411,7 +411,9 @@ def _accept_analysis(record: RunRecord, request: str, plan: AnalyticalPlan,
             )
             try:
                 check_limit(len(proposed.analyses), settings.max_analyses, "Analysis count")
-                accepted_results = accept_analyses(database, model_names, proposed)
+                accepted_results = accept_analyses(
+                    database, model_names, proposed, max_charts=settings.max_charts
+                )
                 state["analysis_attempts"].append(
                     {"attempt": attempt + 1, "status": "accepted",
                      "proposal": proposed.model_dump()}

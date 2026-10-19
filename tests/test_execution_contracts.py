@@ -119,6 +119,23 @@ def test_empty_results_preserve_current_result_schema(tmp_path: Path):
     assert accepted[0][1].row_count == 0
     assert set(accepted[0][1].columns) == {'specimen', 'observed'}
 
+
+def test_variant_expansion_is_checked_before_analysis_commit(tmp_path: Path):
+    database = tmp_path / 'variants_limit.duckdb'
+    with duckdb.connect(str(database)) as con:
+        con.execute("CREATE TABLE main.fact_observations AS SELECT * FROM (VALUES "
+                    "('fern', 2), ('moss', 3), ('fern', 4)) t(specimen, observed)")
+    spec = analysis_spec('SELECT specimen, observed FROM main.fact_observations')
+    spec.variant_field = 'observed'
+    plan = AnalysisPlan(analyses=[spec], qualifications=[], warnings=[])
+    with pytest.raises(AnalysisAcceptanceError, match='3 figures.*limit of 2'):
+        accept_analyses(database, ['fact_observations'], plan, max_charts=2)
+    with duckdb.connect(str(database), read_only=True) as con:
+        assert not con.execute("SELECT 1 FROM information_schema.tables "
+                               "WHERE table_schema = 'analysis'").fetchall()
+    spec.variant_field = 'specimen'
+    assert len(accept_analyses(database, ['fact_observations'], plan, max_charts=2)) == 1
+
 def test_findings_bind_numbers_to_accepted_result_and_plot_fields_are_scoped(tmp_path: Path):
     database = tmp_path / 'result.duckdb'
     with duckdb.connect(str(database)) as con:

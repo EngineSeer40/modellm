@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 from src import agents
+from src.visualisation import plot_descriptions
 from src.core.contracts import AcceptedAnalysisResult, AnalysisDimension, AnalysisMeasure, AnalysisSpec, PlotSpec, ResultColumnProfile, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell
 
 def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monkeypatch, tmp_path):
@@ -25,12 +26,15 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
     payload = captured['payload']
     assert payload['original_request'] == request
     assert payload['visualisation_goal'] == spec.visualisation_goal
+    assert 'concept_id' not in payload
+    assert 'variant_field' not in payload
     assert 'finding' not in payload
     assert 'evidence' not in payload
     with pytest.raises(ValidationError, match='missing accepted-result column'):
         captured['schema'].model_validate({'function': 'line', 'columns': {'x': 'event_day', 'y': 'event_count', 'color': 'variable'}, 'filters': [], 'options': {}})
     assert 'sample_rows' not in json.dumps(payload)
     assert 'main.fact_events' not in json.dumps(payload)
+    assert payload['available_plots'] == plot_descriptions()
     result_context = payload['analytical_result']
     assert 'profile' in result_context
     assert 'dimensions' in result_context
@@ -44,4 +48,4 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
                 frame=pd.DataFrame({'event_day': ['2026-01-02'], 'cohort': ['B'], 'event_count': [2]}))
     assert captured['blocks'][0] == shared
     assert captured['schema'].model_json_schema() == schema
-    assert set(json.loads(shared['text'])) == {'renderer_capabilities', 'renderer_templates'}
+    assert set(json.loads(shared['text'])) == {'available_plots', 'renderer_templates'}

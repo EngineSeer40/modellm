@@ -91,8 +91,8 @@ def plot_descriptions() -> dict[str, str]:
         "box": "Compare medians, spread and outliers between groups; expects individual numeric observations and optional categories.",
         "choropleth": "Compare values across geographic regions on a projected map; expects recognised region identifiers and numeric values.",
         "choropleth_map": "Compare regions on a tile map; requires matching boundary geometry, which this renderer cannot currently supply.",
-        "density_contour": "Show contours of binned observations across numeric x/y dimensions; does not interpolate an irregular measured surface.",
-        "density_heatmap": "Reveal hotspots and bands by binning observations across two dimensions; not an interpolated measurement grid.",
+        "density_contour": "Show contours of binned observations across numeric x/y dimensions; z is aggregated within bins, and color separates groups rather than setting contour levels. Does not interpolate an irregular measured surface.",
+        "density_heatmap": "Reveal hotspots and bands by binning observations across two dimensions; z is aggregated within bins, not interpolated into a measurement grid.",
         "density_map": "Reveal geographic concentrations or weighted hotspots; expects latitude/longitude in degrees and an optional intensity measure.",
         "ecdf": "Compare percentiles and distribution tails; turns numeric observations into cumulative proportions, optionally grouped.",
         "funnel": "Compare quantities across ordered process stages to show progression or attrition; expects stage labels and values.",
@@ -204,7 +204,10 @@ def validate_plot_candidate(frame: pd.DataFrame, plot: PlotSpec, result: Accepte
     """Use the real renderer, retaining concise errors for model correction."""
     try:
         validate_plot_spec(plot, result, selection)
-        return render_plot(frame, plot, title)
+        figure = render_plot(frame, plot, title)
+        if not figure.data and not filter_frame(frame, plot.filters).empty:
+            raise ValueError("Renderer returned no traces for nonempty selected data")
+        return figure
     except (ValueError, TypeError, KeyError, NotImplementedError) as exc:
         detail = " ".join(str(exc).split())[:350]
         hint = "Choose a simpler compatible encoding using the same accepted data and selection."

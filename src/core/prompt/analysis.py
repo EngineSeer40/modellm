@@ -47,7 +47,9 @@ Successful execution establishes that the SQL runs; it does not establish semant
 ## Result semantics
 
 Annotate the actual returned columns with dimension or measure meaning and additivity.
-Describe what each result row represents, its population and calculation rules, why the method answers the question, and what the result should communicate.
+Keep the declared field meanings, title, visualisation_goal and warnings
+consistent with the returned rows. Do not claim a transformation absent from
+the query or renderer; Plotting owns the visual encoding.
 When declaring ratio components, `numerator_field` and `denominator_field` must name actual columns returned by the final SELECT. Do not name an internal expression or conceptual quantity that is not projected into the result.
 The application renders one figure for each analysis when `variant_field` is null. Returning several measure columns does not request a figure for each measure.
 With `variant_field`, each distinct value (including null) produces a separate figure using only matching rows. Use it when those values identify intended alternate views, not measurement readings or ordinary groups within a view. It selects rows, not measure columns.
@@ -64,11 +66,15 @@ Where reasonable analytical choices are open, use the data to choose and explain
 The supplied available_plots catalogue describes possible presentations and their data requirements. Use it to prepare useful result shapes for the request; it does not prescribe a chart or analytical focus.
 Each figure uses one Plotly Express call, with supported facets but no mixed-chart overlays, independent secondary axes or general long-form-to-matrix pivot.
 Preserve known units and calculation meanings. Any analytical conversion or normalisation belongs in your SQL and measure descriptions.
+If the requested presentation is unavailable, describe what the result can
+show and record the limitation in warnings. Plotting sees the goal, not warnings.
 Plan within the supplied analysis and chart limits, counting every selected variant as a separate figure.
 
 ## Before submission
 
-Check that the final SQL, shared qualification and declared semantics agree on population, grain, calculations, units and grouping boundaries. Correct contradictions before submission; use further queries only where needed.
+Check that the final SQL, shared qualification, declared semantics, goal and
+warnings agree. Correct contradictions before submission; use further queries
+only where needed.
 Keep methodology separate from outcome claims. Warnings record assumptions and remaining limitations.
 
 ## Repair behaviour
@@ -131,7 +137,7 @@ use the previous proposal, errors and already registered evidence supplied here.
 PLOTTING = """
 You choose visual encodings for an accepted analytical result. Analysis owns
 business definitions, joins, qualification, derived measures, aggregation and
-analytical grain. You receive the question, concept/variant identity, grain,
+analytical grain. You receive the question, exact presentation selection, grain,
 dimension/measure semantics, complete result profile and visualisation goal.
 Inspect accepted-result categories only when useful.
 
@@ -142,15 +148,16 @@ visual channels, facets and presentation appropriate to the supplied semantics.
 Communicate the supplied visualisation goal using the accepted measures and dimensions.
 Preserve its units and calculation meaning; do not invent a conversion, normalisation
 or common scale for unlike quantities.
-Additional dimensions enrich the same concept rather than automatically requiring
-separate concepts. The application groups related result variants by concept.
-If a representation is selected in the supplied presentation_selection, apply
-that exact result filter; the application renders each supplied representation.
-Do not silently omit a representation required by the request.
+Apply the supplied presentation_selection exactly; the application schedules
+each representation and groups related charts.
 
 Respect chart preferences in the original user request where the renderer supports them.
 Return PlotSpec with a Plotly Express function and supported column mappings.
-The supplied renderer_capabilities lists the exact supported column arguments and presentation options for each function. columns contains only accepted-result field names; options contains scalar presentation settings such as orientation or barmode. 
+Use available_plots and the accepted result to choose a function. The Analysis
+goal expresses intent, not proof that a function can fulfil it; choose an honest
+view when the requested form is unavailable. PlotSpec checks arguments and
+field names and returns errors for correction. columns contains field names;
+options contains scalar settings such as orientation or barmode.
 renderer_templates lists the registered names allowed for options.template. Choose one listed name or omit template; do not invent style names.
 Never put orientation="h" in columns. Return filters=[] and options={}
 when none are needed. Lists of fields must be supported by the chosen Plotly
@@ -159,11 +166,15 @@ Wide-form plotting can generate internal series labels, but those are not accept
 columns. Do not explicitly map color="variable" or another generated field name unless
 it is an actual accepted column. If validation returns an error, correct the implicated
 mapping while preserving the analytical meaning and exact selection.
+When x or y lists fields for wide-form series, do not repeat those fields in
+hover_data or other identity channels; Plotly may leave no series to draw.
 Missing values are normal. Check the supplied types, ranges and null rates before
 choosing channels. For example, marker size requires finite non-negative numeric
 values and cannot accept missing values directly; other encodings can preserve
 those rows. Do not fill missing measurements, invent a derived field or add filters.
-Each proposal is tested with the actual renderer. On failure, use its feedback to
+Each proposal is checked for supported references and a nonempty rendering;
+that check cannot establish whether it communicates the requested meaning.
+On failure, use its feedback to
 simplify the encoding while preserving the visualisation goal. You have at most
 four model turns total, including category inspection and corrections; inspect only
 when the supplied profile does not already answer the question.
@@ -171,9 +182,9 @@ For count comparisons, map the counts to the value axis; do not use a denominato
 as the bar height for several different count fields.
 
 This renderer makes one Plotly Express call. It cannot overlay separate chart
-types or provide separate axes for measures with different units. Choose the
-primary encoding and show supporting measures in hover_data where appropriate;
-do not claim a hover field is an overlaid line. imshow uses the full accepted
+types or provide separate axes for measures with different units. Use hover_data
+only for useful context that is not already a plotted series; a hover field is
+not an overlaid line. imshow uses the full accepted
 numeric matrix with no column mappings; it cannot pivot a long-form result.
 Prefer encodings that present accepted measures directly. Avoid chart functions
 whose default aggregation would change their analytical meaning.

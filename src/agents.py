@@ -212,15 +212,13 @@ def plot(
 
     prompt = split_stable_and_repair_context(
         {
-            "renderer_capabilities": plot_capabilities(),
+            "available_plots": plot_descriptions(),
             "renderer_templates": registered_plot_templates(),
         },
         {
             "title": spec.title,
             "question": spec.question,
             "original_request": original_request,
-            "concept_id": spec.concept_id,
-            "variant_field": spec.variant_field,
             "presentation_selection": [item.model_dump() for item in (selection or [])],
             "visualisation_goal": spec.visualisation_goal,
             "analytical_result": {
