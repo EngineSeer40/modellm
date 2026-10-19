@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from .core.contracts import AnalyticalPlan, FieldRef, ModelOutput, ValidationIssue
+from .core.contracts import ConceptualPlan, FieldRef, ModelOutput, ValidationIssue
 from .database import connect
 from .data import identifier
 
@@ -16,7 +16,7 @@ def ref_container(ref: FieldRef) -> tuple[str, str]:
 
 
 def plan_issues(
-    plan: AnalyticalPlan, profiles: dict, relationships: list[dict] | None = None
+    plan: ConceptualPlan, profiles: dict, relationships: list[dict] | None = None
 ) -> list[ValidationIssue]:
     """Resolve declarations against this run; do not interpret transformation prose."""
     issues: list[ValidationIssue] = []
@@ -247,7 +247,7 @@ def plan_issues(
 
 
 def validate_built_models(
-    database: Path, plan: AnalyticalPlan, built_schemas: dict[str, dict[str, str]]
+    database: Path, plan: ConceptualPlan, built_schemas: dict[str, dict[str, str]]
 ) -> list[str]:
     """Check run-declared output interfaces and optional declared grain keys."""
     issues: list[str] = []

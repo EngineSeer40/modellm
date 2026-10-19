@@ -2,7 +2,7 @@
 
 **This is the authoritative living map of the implemented application. Read it in full at the start of every new session, before the first response or other investigation, including for questions, overviews, and acknowledgements.** Maintain it in the same change whenever substantial changes affect contracts, prompts, signatures, dependencies, data flow, validation, or persistence.
 
-Reviewed: 2026-10-19. Contract version: `4`. This reference describes the current working tree, including existing uncommitted application changes. Verify relevant source when applying the map; explicitly identify and reconcile any discrepancy so this authoritative reference stays accurate.
+Reviewed: 2026-10-20. Contract version: `4`. This reference describes the current working tree, including existing uncommitted application changes. Verify relevant source when applying the map; explicitly identify and reconcile any discrepancy so this authoritative reference stays accurate.
 
 ## Purpose and navigation
 
@@ -34,14 +34,14 @@ Signature notation preserves source annotations and defaults. A function without
 | [src/execution.py](src/execution.py), [src/worker.py](src/worker.py) | Admission, worker lifecycle, shared model budgets, deadlines | `ReleaseSettings`, `RunWorkspace`, `workflow.run`, usage and cleanup | Request manifest; terminal `RunState` through a future and disk |
 | [src/workflow.py](src/workflow.py) | Explicit stage order, acceptance and local repairs | Source functions, agents, dbt, modelling checks, analysis, renderer, `RunRecord` | Events, proposals, accepted results, chart associations |
 | [src/data.py](src/data.py), [src/database.py](src/database.py) | Ingestion, profiling, candidate relationships, DuckDB connection policy | Run database and settings | `raw` tables, plain profile/relationship/schema dictionaries |
-| [src/agents.py](src/agents.py) | Stage-specific prompt payloads, schema and tool selection | Prompt constants, contracts, tools, runtime | `AnalyticalPlan`, `DbtImplementation`, `AnalysisPlan`, `PlotSpec`; dormant `AnalysisFinding` |
+| [src/agents.py](src/agents.py) | Stage-specific prompt payloads, schema and tool selection | Prompt constants, contracts, tools, runtime | `ConceptualPlan`, `DimensionalPlan`, `AnalyticalPlan`, `PlottingPlan`; dormant `AnalysisFinding` |
 | [src/agent_runtime.py](src/agent_runtime.py), [src/context_cost.py](src/context_cost.py) | Strands/Bedrock execution, structured correction, cache layout, output offloading | Settings, budgets, telemetry attributes, Pydantic schema | Structured model object and correlated execution events |
 | [src/core/contracts.py](src/core/contracts.py) | Pydantic output/input shapes and intrinsic validators | Pydantic; installed Plotly template registry | Schemas delivered to agents and parsed by Python |
 | [src/core/prompt/](src/core/prompt/) | Agent responsibilities and behavioral instructions | Constants selected in `agents.py` | System instruction strings |
-| [src/modelling_validation.py](src/modelling_validation.py) | Run-specific source/plan references and built-model interfaces | `AnalyticalPlan`, profiles, schemas, DuckDB rows | `ValidationIssue` objects or error strings |
-| [src/dbt.py](src/dbt.py), [src/sql_policy.py](src/sql_policy.py) | Generated project writing, restricted SQL/Jinja/YAML, dbt subprocess | `DbtImplementation`, declared source/model names, budget and connection settings | Built `main` tables; dbt execution and node diagnostics |
+| [src/modelling_validation.py](src/modelling_validation.py) | Run-specific source/plan references and built-model interfaces | `ConceptualPlan`, profiles, schemas, DuckDB rows | `ValidationIssue` objects or error strings |
+| [src/dbt.py](src/dbt.py), [src/sql_policy.py](src/sql_policy.py) | Generated project writing, restricted SQL/Jinja/YAML, dbt subprocess | `DimensionalPlan`, declared source/model names, budget and connection settings | Built `main` tables; dbt execution and node diagnostics |
 | [src/analysis.py](src/analysis.py), [src/tools/analysis_tools.py](src/tools/analysis_tools.py) | Validated-model inspection, final SQL assembly, atomic acceptance | SQL policy, analysis contracts, DuckDB | Accepted `analysis` tables, column profiles, frames, scalar metrics |
-| [src/visualisation.py](src/visualisation.py) | Supported encodings, row selections, scoped validation and actual rendering | `AnalysisSpec`, `AcceptedAnalysisResult`, `PlotSpec`, pandas, Plotly Express | In-memory figures and errors suitable for correction |
+| [src/visualisation.py](src/visualisation.py) | Supported encodings, row selections, scoped validation and actual rendering | `AnalysisSpec`, `AcceptedAnalysisResult`, `PlottingPlan`, pandas, Plotly Express | In-memory figures and errors suitable for correction |
 | [src/tools/result_tools.py](src/tools/result_tools.py) | Accepted-result category inspection; dormant finding evidence | One accepted relation and its fields; optional spec and registry | Category counts; stored evidence and bound finding text |
 | [src/run.py](src/run.py), [src/workspace.py](src/workspace.py), [src/storage.py](src/storage.py) | Run types, atomic records, workspace paths, input cleanup and retention | Filesystem, settings | `result.json`, ownership/request manifests and run directories |
 | [src/ui/views.py](src/ui/views.py), [src/ui/saved_run.py](src/ui/saved_run.py) | Dashboard, model previews, diagnostics and saved-run loading | Run dictionaries, chart JSON, database, plan/schema metadata | Streamlit views |
@@ -58,13 +58,13 @@ flowchart TD
     RM --> W[Worker process]
     W --> FLOW[workflow.run]
     FLOW --> RAW[Load and profile raw sources]
-    RAW --> CP[Conceptual agent: AnalyticalPlan]
+    RAW --> CP[Conceptual agent: ConceptualPlan]
     CP --> PV[plan_issues]
-    PV --> DBT[dbt agent: DbtImplementation]
+    PV --> DBT[dbt agent: DimensionalPlan]
     DBT --> BV[Restricted project: compile, build, test and model checks]
-    BV --> AN[Analysis agent: AnalysisPlan]
+    BV --> AN[Analysis agent: AnalyticalPlan]
     AN --> AC[Transactional acceptance: analysis result tables]
-    AC --> PL[Plotting agent: scoped PlotSpec]
+    AC --> PL[Plotting agent: scoped PlottingPlan]
     PL --> R[Validate and render Plotly]
     R --> ART[Chart JSON and result.json]
     ART --> V[Results, Data Model and Technical Details]
@@ -75,16 +75,17 @@ flowchart TD
 | --- | --- | --- |
 | Live UI | `app.py → render_app() → render_run()` | UI uses `RunManager`; worker performs the workflow. The Run fragment polls the current disk record. |
 | Direct Python workflow | `workflow.run(paths, request, root, ...)` | Runs synchronously with settings, a workspace and model budget. Does not perform `RunManager` admission or parent-process supervision. |
+| Development harness | `python -m harness` | Imports arbitrary frozen post-dbt bundles and runs Analysis, fixed-result Plotting or both through acceptance, without UI/ingestion/dbt. Uses isolated trial workers, immutable inputs/code and private workflow stage helpers; its own supervisor and experiment policy bound execution. See [harness/README.md](harness/README.md). |
 | Saved dashboard | `app.py --saved-run PATH → render_app(saved_run=...)` | Loads a finished run dictionary and existing artifacts. Does not start agents or normal live-run cleanup. |
 | Finding generation | `_generate_findings(...)` | Implemented but not called by `_run`. Active runs set `findings`, `finding_attempts`, and `evidence` to empty lists. |
 | Legacy database retention | `storage.cleanup_run_databases(...)` | Remains callable; the current workflow/manager use whole-workspace `cleanup_run_workspaces(...)`. |
 
 | Flow | Agent output contract | Python acceptance | Downstream dependency |
 | --- | --- | --- | --- |
-| Conceptual | `AnalyticalPlan` | Pydantic then `plan_issues` | dbt generation and Analysis |
-| Model construction | `DbtImplementation` | Pydantic, exact model set, generated-file policy, dbt, `validate_built_models` | Validated `main` models and schemas |
-| Analysis | `AnalysisPlan` | Pydantic, SQL access policy, transactional materialisation, field/component references and chart count | Accepted results and Plotting context |
-| Plotting | Dynamic subclass of `PlotSpec` | Pydantic plus exact selection, supported arguments, real rendering and nonempty traces | Chart files and UI associations |
+| Conceptual | `ConceptualPlan` | Pydantic then `plan_issues` | dbt generation and Analysis |
+| Model construction | `DimensionalPlan` | Pydantic, exact model set, generated-file policy, dbt, `validate_built_models` | Validated `main` models and schemas |
+| Analysis | `AnalyticalPlan` | Pydantic, SQL access policy, transactional materialisation, field/component references and chart count | Accepted results and Plotting context |
+| Plotting | Dynamic subclass of `PlottingPlan` | Pydantic plus exact selection, supported arguments, real rendering and nonempty traces | Chart files and UI associations |
 | Finding — disabled | `AnalysisFinding` or `EarlyValidatedAnalysisFinding` | Evidence inspection and `render_finding` | Bound text, evidence and caveats |
 
 The concrete call boundaries are below; full argument lists appear in the corresponding flow and signature index.
@@ -97,11 +98,11 @@ The concrete call boundaries are below; full argument lists appear in the corres
 | Worker CLI | `worker.main → workflow.run` | Workflow writes the workspace record; worker exits after telemetry flushing |
 | `workflow.run` | `workflow._run` | `RunState`; outer settings/budget contexts and input cleanup wrap execution |
 | `workflow._run` | `workflow._prepare_sources` | `(names, profiles, links)` passed into conceptual/model stages |
-| `workflow._run` | `workflow._build_conceptual_model` | Accepted `AnalyticalPlan` passed into model generation and Analysis |
+| `workflow._run` | `workflow._build_conceptual_model` | Accepted `ConceptualPlan` passed into model generation and Analysis |
 | `workflow._build_conceptual_model` | `agents.conceptual → invoke`; then `plan_issues` | Proposed plan; structured issues determine acceptance or revision |
 | `workflow._run` | `workflow._build_models` | Validated model names; also stores schemas consumed by Analysis |
 | `workflow._build_models` | `agents.implement → invoke`; then `write_project`, `run_dbt`, `validate_built_models` | Proposed files, command results and interface issues determine acceptance or repair |
-| `workflow._run` | `workflow._accept_analysis` | `(AnalysisPlan, AcceptedResults)` used for warnings, metrics and plotting |
+| `workflow._run` | `workflow._accept_analysis` | `(AnalyticalPlan, AcceptedResults)` used for warnings, metrics and plotting |
 | `workflow._accept_analysis` | `agents.analyse → invoke`; then `accept_analyses` | Proposal and accepted result pairs; acceptance errors feed the Analysis repair |
 | `accept_analyses` | `analysis_statement`, `validate_result_semantics` | Executable final SQL and checked result metadata inside one transaction |
 | `workflow._run` | `workflow._render_visualisations` | Mutates chart/spec/attempt state; figure files are persisted before success events |
@@ -151,7 +152,7 @@ schemas(database: Path, names: list[str], schema: str = 'main') -> dict
 
 | Step | Transformation | Stored / consumed |
 | --- | --- | --- |
-| Ingest | Accept 2–6 CSV, Parquet, JSON, JSONL or NDJSON files. Normalise filenames to distinct safe dataset identifiers. Trusted ingestion opens DuckDB with external access enabled for file readers. Reject a detected single-field wrapped record array. | `raw.<dataset>` tables; `state.raw_names` |
+| Ingest | Accept 2–6 CSV, Parquet, JSON, JSONL or NDJSON files. Production defaults to 250,000 rows, 100 columns and 20 MiB per file, with 60 MiB total uploads; development row/shape/byte caps are unset unless overridden. The uploader displays effective configured limits. Ingestion reads at most the row cap plus one and rejects oversized files before profiling, naming the offending file; it never accepts a truncated sample. Normalise filenames to distinct safe dataset identifiers. Trusted ingestion opens DuckDB with external access enabled for file readers. Reject a detected single-field wrapped record array. | `raw.<dataset>` tables; `state.raw_names` |
 | Profile | Count rows, nulls, exact distincts, duplicate rows, sample values and selected bounds; collect top values when cardinality is small. Enforce configured row, column and serialized-profile limits. | `state.profiles`; Conceptual and dbt agent context |
 | Relationships | Look for shared `_id` fields with a unique parent column, then count unmatched child rows. | `state.relationships`; candidate evidence for Conceptual/dbt, later orphan warnings |
 | Model schema | `DESCRIBE` built tables to obtain exact output names and DuckDB types. | `state.model_schemas`; Analysis tools and prompt |
@@ -167,24 +168,26 @@ Sources: [src/agents.py](src/agents.py), [src/core/prompt/conceptual.py](src/cor
 
 ```text
 conceptual(request: str, profiles: dict, relationships: list[dict], emit: Callable,
-           feedback: list[ValidationIssue] | None = None, previous: AnalyticalPlan | None = None,
+           feedback: list[ValidationIssue] | None = None, previous: ConceptualPlan | None = None,
            *, cost_experiments: frozenset[str] | None = None,
-           trace_attributes: Mapping[str, AttributeValue] | None = None) -> AnalyticalPlan
-plan_issues(plan: AnalyticalPlan, profiles: dict,
+           trace_attributes: Mapping[str, AttributeValue] | None = None) -> ConceptualPlan
+plan_issues(plan: ConceptualPlan, profiles: dict,
             relationships: list[dict] | None = None) -> list[ValidationIssue]
 ```
+
+**Contract naming:** The four active outputs are `ConceptualPlan`, `DimensionalPlan`, `AnalyticalPlan`, and `PlottingPlan` (displayed as “Plotting Plan”). These replace the earlier `AnalyticalPlan` (conceptual), `DbtImplementation`, `AnalysisPlan`, and `PlotSpec` names respectively. Field shapes and saved JSON keys are unchanged; the UI recognises both current and legacy proposal tool names by stage.
 
 **Prompt assembly:** `CONCEPTUAL_MODEL`, optionally followed by `CONCEPTUAL_REFERENCE_GUIDANCE`. Stable keys are `request`, `profiles`, `candidate_relationships`. Revision keys are `previous_plan_issues`, `previous_plan`. With conceptual caching they become two text blocks; otherwise they are one serialized object. No domain tools are attached to this stage.
 
 | Contract / fields | Prompt expectation | Python interpretation and consumer |
 | --- | --- | --- |
-| `AnalyticalPlan.business_processes`, `.facts`, `.dimensions` | Source-supported processes, atomic facts, connected dimensions and useful reusable structure | `plan_issues` checks distinct names, at least one fact and implemented process references; dbt receives the full accepted plan. It does not prove that the proposed business structure is appropriate. |
+| `ConceptualPlan.business_processes`, `.facts`, `.dimensions` | Source-supported processes, atomic facts, connected dimensions and useful reusable structure | `plan_issues` checks distinct names, at least one fact and implemented process references; dbt receives the full accepted plan. It does not prove that the proposed business structure is appropriate. |
 | `DimensionPlan` identity and `grain_key_fields`; `FactPlan.fact_type`, `.grain`, `.modelling_rationale` | Declare supported identity and grain; request-specific reporting rules belong to Analysis | Reference checks resolve declared keys; built validation checks duplicates for declared grain keys. Grain/rationale prose and fact-type appropriateness are not interpreted by code. |
 | `ModelOutput.name`, `.description`, `.definition`, `.additivity` | Declare every output once with exact inputs, canonical meaning and measure metadata | Duplicate names and missing references are rejected. dbt must emit required names; meaning and additivity remain agent declarations. |
 | `FieldDefinition.kind`, `.inputs`, `.explanation`, `.value` | `copy`: one reference; `derive`: real inputs; `constant`: explicit scalar value; `generate`: independent generation | Pydantic checks these shapes, explicit constant presence and required explanations. `plan_issues` resolves references and checks field/model dependency cycles. dbt turns intent into SQL; Python does not compile definitions into SQL. |
 | `FieldRef.kind`, `.dataset`, `.model`, `.column` | Exact run-local source or planned-model field; names can contain punctuation | Pydantic enforces mutually exclusive reference targets. `plan_issues` resolves containers, columns and declared source scope. |
 | `FactDimensionLink`, `SourceMatchPath`, `MatchStep`, `MatchPair`, `OutputKeyPair` | Explicit equality paths and canonical output key pairs, including contributing sources and unmatched policy | Plan validation checks references, source reachability, one destination per step, final dimension endpoint, key pairs and dependency cycles. It does not prove match uniqueness or that generated joins implement the declared policy. |
-| `AnalyticalPlan.assumptions`, `.unresolved_questions`; `FactDimensionLink.unmatched_explanation` | State chosen interpretations, missing evidence and the effect of unmatched handling | Passed to dbt and/or presented to users; prose does not override structured references or validate an interpretation. |
+| `ConceptualPlan.assumptions`, `.unresolved_questions`; `FactDimensionLink.unmatched_explanation` | State chosen interpretations, missing evidence and the effect of unmatched handling | Passed to dbt and/or presented to users; prose does not override structured references or validate an interpretation. |
 
 `relationships` is accepted by `plan_issues` but is not used by its current body. It remains agent context; Python reference acceptance does not independently verify the candidate cardinality.
 
@@ -197,14 +200,14 @@ plan_issues(plan: AnalyticalPlan, profiles: dict,
 Sources: [src/core/prompt/modelling.py](src/core/prompt/modelling.py), [src/dbt.py](src/dbt.py), [src/sql_policy.py](src/sql_policy.py), [src/modelling_validation.py](src/modelling_validation.py), `agents.implement`, `workflow._build_models`.
 
 ```text
-implement(plan: AnalyticalPlan, profiles: dict, relationships: list[dict], emit: Callable,
-          failure: str = '', previous: DbtImplementation | None = None, *,
+implement(plan: ConceptualPlan, profiles: dict, relationships: list[dict], emit: Callable,
+          failure: str = '', previous: DimensionalPlan | None = None, *,
           cost_experiments: frozenset[str] | None = None,
-          trace_attributes: Mapping[str, AttributeValue] | None = None) -> DbtImplementation
+          trace_attributes: Mapping[str, AttributeValue] | None = None) -> DimensionalPlan
 write_project(project: Path, database: Path, source_names: list[str],
-              implementation: DbtImplementation) -> None
+              implementation: DimensionalPlan) -> None
 run_dbt(project: Path, command: str) -> dict
-validate_built_models(database: Path, plan: AnalyticalPlan,
+validate_built_models(database: Path, plan: ConceptualPlan,
                       built_schemas: dict[str, dict[str, str]]) -> list[str]
 ```
 
@@ -212,13 +215,13 @@ validate_built_models(database: Path, plan: AnalyticalPlan,
 
 | Contract / expectation | Enforced by | Result / downstream effect |
 | --- | --- | --- |
-| `DbtImplementation.files: list[DbtFile]`; each `path` is a flat planned model SQL filename or `schema.yml` | Pydantic path pattern, duplicate-path and exactly-one-schema validators; workflow compares the returned SQL model set with the accepted plan | Proposal saved as `attempts/dbt_NN.json`; unplanned or missing SQL models trigger repair |
+| `DimensionalPlan.files: list[DbtFile]`; each `path` is a flat planned model SQL filename or `schema.yml` | Pydantic path pattern, duplicate-path and exactly-one-schema validators; workflow compares the returned SQL model set with the accepted plan | Proposal saved as `attempts/dbt_NN.json`; unplanned or missing SQL models trigger repair |
 | `DbtFile.content` implements the accepted plan using `source('raw', ...)` and `ref(...)` | `validate_dbt_files` and `render_relations_only` permit only literal declared relation calls, then SQL policy checks the rendered query | `write_project` writes generated files only after policy checks |
 | No generated macros, commands, packages, hooks or source declarations | Restricted Jinja AST, SQL validation, schema YAML key/test allowlists | Application owns `sources.yml`, project config and DuckDB profile |
 | Finite calendars may be generated in dbt | `validate_analysis_sql(..., source_names=..., allow_calendar_generation=True)` and `_validate_calendar_generation` | Narrow dbt-only exception for `range` / `generate_series`, including allowed `UNNEST`; Analysis cannot use this exception |
 | `schema.yml` declares justified built-in tests | `validate_schema`, `_tests`; dbt executes declared `unique`, `not_null`, `relationships` tests | Test results and messages go into `dbt_runs`, `dbt_results` |
 | Exact declared grain and output references | `validate_built_models` checks missing planned columns, duplicate declared grain keys, join key and match-path endpoint columns | Validated names/schemas become the Analysis input |
-| `DbtImplementation.explanation` reports implementation and repairs | Stored as `dbt_explanation`, available in proposal diagnostics | Text is not checked against SQL semantics |
+| `DimensionalPlan.explanation` reports implementation and repairs | Stored as `dbt_explanation`, available in proposal diagnostics | Text is not checked against SQL semantics |
 
 `write_project` emits `dbt_project.yml`, `profiles.yml`, application-owned `models/sources.yml`, and the generated model files. Models are materialized as tables in DuckDB `main`. Before rewriting, it removes old `.sql`/`.yml` files in that run's models directory.
 
@@ -233,24 +236,24 @@ The workflow runs **compile → build → test**, then reads schemas and applies
 Sources: [src/core/prompt/analysis.py](src/core/prompt/analysis.py), [src/agents.py](src/agents.py), [src/tools/analysis_tools.py](src/tools/analysis_tools.py), [src/analysis.py](src/analysis.py), `workflow._accept_analysis`.
 
 ```text
-analyse(request: str, plan: AnalyticalPlan, model_schemas: dict, summaries: dict,
-        emit: Callable, database: Path, feedback: str = '', previous: AnalysisPlan | None = None,
+analyse(request: str, plan: ConceptualPlan, model_schemas: dict, summaries: dict,
+        emit: Callable, database: Path, feedback: str = '', previous: AnalyticalPlan | None = None,
         *, cost_experiments: frozenset[str] | None = None,
-        trace_attributes: Mapping[str, AttributeValue] | None = None) -> AnalysisPlan
-analysis_statement(spec: AnalysisSpec, plan: AnalysisPlan, model_names: list[str]) -> str
-accept_analyses(database: Path, model_names: list[str], analysis: AnalysisPlan,
+        trace_attributes: Mapping[str, AttributeValue] | None = None) -> AnalyticalPlan
+analysis_statement(spec: AnalysisSpec, plan: AnalyticalPlan, model_names: list[str]) -> str
+accept_analyses(database: Path, model_names: list[str], analysis: AnalyticalPlan,
                 *, max_charts: int | None = None) -> list[tuple[AnalysisSpec, AcceptedAnalysisResult]]
 validate_result_semantics(spec: AnalysisSpec, result: AcceptedAnalysisResult) -> None
 ```
 
-**Prompt assembly:** `ANALYSIS`, optionally followed by `ANALYSIS_PREVIEW_GUIDANCE`. Stable keys: `request`, `analytical_plan`, `validated_schemas`, `model_summaries`, `available_plots`, `limits` (`max_analyses`, `max_charts`). Repair keys: `previous_analysis`, `previous_acceptance_error`.
+**Prompt assembly:** `ANALYSIS`, optionally followed by `ANALYSIS_PREVIEW_GUIDANCE`. Stable keys: `request`, `conceptual_plan`, `validated_schemas`, `model_summaries`, `available_plots`, `limits` (`max_analyses`, `max_charts`). Repair keys: `previous_analysis`, `previous_acceptance_error`.
 
 **Tools:** `DuckDBAnalysisTools(database, list(model_schemas))` exposes `list_models()`, `describe_model(model)`, and `query_data(sql, limit)`. With `small_analysis_previews`, the tool remains named `query_data` but its default limit is 20 instead of 500. An explicit limit is clamped to 1–500. Tool outputs contain `columns`, `row_count`, `truncated`, and `rows`; all access is restricted to this run's validated `main` models.
 
 | Analysis field | Prompt expectation | Executable check / consumer |
 | --- | --- | --- |
-| `AnalysisPlan.analyses` | Useful complete results within run limits | Pydantic requires at least one; workflow checks `max_analyses`; results are accepted together |
-| `AnalysisPlan.qualifications` | Reuse a common population across related views | Distinct IDs and SQL scope checked; `analysis_statement` resolves references and builds the population CTE |
+| `AnalyticalPlan.analyses` | Useful complete results within run limits | Pydantic requires at least one; workflow checks `max_analyses`; results are accepted together |
+| `AnalyticalPlan.qualifications` | Reuse a common population across related views | Distinct IDs and SQL scope checked; `analysis_statement` resolves references and builds the population CTE |
 | `AnalysisSpec.query` | Final reproducible SQL with a direct or qualified path | `QueryDefinition.qualification_choice`, SQL policy, actual DuckDB execution |
 | `title`, `question` | Describe the actual result without promising an unavailable transformation | Passed to Plotting, run records and UI; prose meaning is not validated |
 | `concept_id` | Group related analyses of one concept | Stored on results/charts; Results groups by it. It neither creates charts nor reaches Plotting's current prompt. |
@@ -260,7 +263,7 @@ validate_result_semantics(spec: AnalysisSpec, result: AcceptedAnalysisResult) ->
 | `AnalysisMeasure.components` | Project actual numeric numerator and denominator fields | Acceptance checks both references are present and numeric and `scale` is finite and positive. It does not prove the ratio expression uses them. |
 | `variant_field` | Identify alternate views through distinct row values, including null | Acceptance checks the field and planned chart count; `representation_selections` expands values into exact filters. It does not select measure columns. |
 | `visualisation_goal` | State a feasible comparison or pattern using returned rows | Delivered as free-form text to Plotting and dormant Finding. There is no structured required-measure/view contract or semantic feasibility validator. |
-| `AnalysisPlan.warnings` | Remaining assumptions, data or presentation limitations | Added to run `quality_warnings` and shown by Results; not delivered to Plotting |
+| `AnalyticalPlan.warnings` | Remaining assumptions, data or presentation limitations | Added to run `quality_warnings` and shown in Technical Details; not delivered to Plotting |
 
 **SQL paths:**
 
@@ -274,7 +277,7 @@ validate_result_semantics(spec: AnalysisSpec, result: AcceptedAnalysisResult) ->
 
 **Full results versus previews:** accepted SQL is executed independently of tool previews. Acceptance materializes the full final result. The 500-row preview ceiling and `execute_analysis_sql`'s default 5,000-row complete-result cap belong to the inspection helper; `accept_analyses` does not apply those caps. The tool records normalized SQL strings in `executed_queries`, but current `agents.analyse` does not require final SQL to match that set.
 
-**Stored handoff:** `state.analysis` is `AnalysisPlan.model_dump()`. Each `state.analysis_results` item stores `title`, `result_id`, `relation`, `rows`, `columns`, `acceptance_id`, `executed_sql`, and `concept_id`; it does not persist the full `AcceptedAnalysisResult.profile` there. Plotting receives the in-memory accepted object. `state.metrics` contains numeric cells from single-row results, keyed from title and column.
+**Stored handoff:** `state.analysis` is `AnalyticalPlan.model_dump()`. Each `state.analysis_results` item stores `title`, `result_id`, `relation`, `rows`, `columns`, `acceptance_id`, `executed_sql`, and `concept_id`; it does not persist the full `AcceptedAnalysisResult.profile` there. Plotting receives the in-memory accepted object. `state.metrics` contains numeric cells from single-row results, keyed from title and column.
 
 ## Plotting and rendering
 
@@ -285,13 +288,13 @@ plot(spec: AnalysisSpec, result: AcceptedAnalysisResult, emit: Callable,
      database: Path, selection: list[ResultFilter] | None = None, *,
      original_request: str, frame: pd.DataFrame, title: str | None = None,
      cost_experiments: frozenset[str] | None = None,
-     trace_attributes: Mapping[str, AttributeValue] | None = None) -> PlotSpec
+     trace_attributes: Mapping[str, AttributeValue] | None = None) -> PlottingPlan
 accepted_result_plot_schema(result: AcceptedAnalysisResult,
                             selection: list[ResultFilter] | None = None, *,
-                            frame: pd.DataFrame, title: str = '') -> type[PlotSpec]
-validate_plot_candidate(frame: pd.DataFrame, plot: PlotSpec, result: AcceptedAnalysisResult,
+                            frame: pd.DataFrame, title: str = '') -> type[PlottingPlan]
+validate_plot_candidate(frame: pd.DataFrame, plot: PlottingPlan, result: AcceptedAnalysisResult,
                         selection: list[ResultFilter], title: str)
-render_plot(frame: pd.DataFrame, plot: PlotSpec, title: str)
+render_plot(frame: pd.DataFrame, plot: PlottingPlan, title: str)
 ```
 
 **Scheduling:** `_render_visualisations` loads the full accepted frame once per nonempty result. Without `variant_field`, `representation_selections` yields `(None, [])`. With one, it reads distinct values in sorted order and yields an `eq` selection per value or `is_null` for null. For each selection the workflow calls Plotting once; SDK corrections stay inside that invocation. Empty results create an annotated empty figure without any model call.
@@ -310,14 +313,14 @@ render_plot(frame: pd.DataFrame, plot: PlotSpec, title: str)
 
 The model is not sent the DataFrame rows, SQL, upstream model access, warnings, population definition, observation rule, rationale, finding text, `concept_id`, or `variant_field` in this prompt. The DataFrame is captured by the Python validator. Its only attached domain tool, `category_counts(field: str, limit: int = 20) -> dict`, inspects categories in the accepted relation; it is not automatically restricted by the presentation selection. Tool results contain `field`, `truncated`, and `values` (`value`, `count`), with a 1–100 limit.
 
-| `PlotSpec` field / instruction | Python enforcement | Remaining boundary |
+| `PlottingPlan` field / instruction | Python enforcement | Remaining boundary |
 | --- | --- | --- |
 | `function` names one available Plotly Express function | `plot_capabilities()` introspects installed functions; `validate_plot_arguments` checks the name | Function availability does not prove that its semantics fit the result |
-| `columns` maps supported channel arguments to exact accepted fields or nonempty field lists | `PlotSpec.column_mappings` checks value shape; scoped validation checks argument support and field existence | Does not prove that all requested measures are visible, units are compatible, or coordinate systems suit geographic channels |
+| `columns` maps supported channel arguments to exact accepted fields or nonempty field lists | `PlottingPlan.column_mappings` checks value shape; scoped validation checks argument support and field existence | Does not prove that all requested measures are visible, units are compatible, or coordinate systems suit geographic channels |
 | `filters` equals supplied selection | Exact model-list equality checked by `validate_plot_spec`; `filter_frame` applies it to the actual DataFrame | No additional population filters are permitted |
 | `options` contains supported scalar presentation settings | Intrinsic validator accepts scalar strings/numbers/booleans and registered templates; argument validator restricts keys to installed support | Options do not permit arbitrary Plotly dictionaries, labels mappings or graph-object overlays |
 | Preserve calculated meaning; no new business aggregation, conversion, normalization or data filling | Prompt instruction and unchanged accepted data | Some Plotly functions perform their own aggregation; the validator does not establish analytical appropriateness |
-| Choose a compatible, nonempty rendering and correct encoding failures | Dynamic `AcceptedResultPlotSpec` validator calls `validate_plot_candidate` on real selected data | A figure with traces can still be misleading or visually unusable |
+| Choose a compatible, nonempty rendering and correct encoding failures | Dynamic `AcceptedResultPlottingPlan` validator calls `validate_plot_candidate` on real selected data | A figure with traces can still be misleading or visually unusable |
 | Human-readable titles/axis labels and declared units | Prompt instruction; title is supplied by application rendering | No automatic general rewrite of field labels or validation of their prose |
 
 The supported column keys are defined in `PLOTLY_COLUMN_ARGUMENTS`, intersected with each installed function's signature. Supported presentation keys are `orientation`, `barmode`, `line_shape`, `markers`, `points`, `opacity`, `log_x`, `log_y`, `width`, `height`, `template`, and `text_auto`, also intersected per function. The precise catalogue is runtime-derived rather than a frozen list in the schema. Current prompts receive descriptions, not the full `plot_capabilities()` signature dictionary.
@@ -367,7 +370,8 @@ invoke(prompt: str | list[dict], schema: type[T], stage: str, emit: Callable,
        system_prompt: str, tools: list | None = None, *,
        cost_experiments: frozenset[str] | None = None,
        trace_attributes: Mapping[str, AttributeValue] | None = None,
-       context_directory: Path | None = None, limits: dict[str, int] | None = None) -> T
+       context_directory: Path | None = None, limits: dict[str, int] | None = None,
+       cache_policy: Literal['default', 'disabled'] = 'default') -> T
 ```
 
 `invoke` runs async `_invoke` synchronously. `_invoke` constructs `BedrockModel` and `strands.Agent`, attaches stage tools, budget hooks and optional offload plugins, and calls `agent.stream_async(prompt, structured_output_model=schema, limits=...)`. The supplied Pydantic schema is also recorded as a `StructuredOutputTool` specification with system instructions. SDK structured-output correction occurs inside this invocation; workflow repairs are separate calls with a previous proposal and feedback.
@@ -376,7 +380,7 @@ invoke(prompt: str | list[dict], schema: type[T], stage: str, emit: Callable,
 | --- | --- |
 | Model selection | `configured_model_id(stage)` chooses `plotting_model_id` only for `visualisation generation`; every other stage uses `model_id`. Defaults are defined in `config.py`, with separate environment overrides. |
 | Provider options | Sonnet 5/5.5 omit explicit sampling; 5.5 wraps model streaming with automatic tool choice. Nova 2 Lite receives low-effort reasoning config. Other models receive temperature 0.1. These are code branches, not guarantees of provider availability. |
-| Caching | Compatible Claude stages enable automatic five-minute cache configuration. Conceptual caching is controlled independently. For block prompts, a checkpoint follows the first text block. Plotting puts shared catalogue/templates first; per-chart context follows. |
+| Caching | Compatible Claude stages enable automatic five-minute cache configuration. Conceptual caching is controlled independently. For block prompts, a checkpoint follows the first text block. Plotting puts shared catalogue/templates first; per-chart context follows. The optional runtime keyword `cache_policy='disabled'` disables application/SDK explicit caching and checkpoint insertion and rejects incoming explicit checkpoints, including nested ones. Its default retains existing behavior. The requested policy is recorded in model-call events; configured caching is distinct from measured cache reads. |
 | Context splitting | `split_stable_and_repair_context(stable, repair)` JSON-serializes both dictionaries with `default=str` into two text blocks. For Plotting, its second block is per-chart context even though the helper parameter is named `repair`. |
 | Offloading | `offload_analysis` applies to `query_data`; dormant `offload_finding` to `inspect_result`. Strands `ContextOffloader` uses per-call `context/<call_id>` local storage, a 2,500-token threshold, 1,000-token preview and retrieval tool. Accepted results remain independent of those previews. |
 | Global budget | `RunBudget` hooks run before/after internal model calls, checking time, call count and previously reported estimated cost. Response usage updates the same budget; a transport failure can mark usage unknown. |
@@ -384,6 +388,12 @@ invoke(prompt: str | list[dict], schema: type[T], stage: str, emit: Callable,
 | Result | Missing structured output raises `RuntimeError`. Otherwise return `final.structured_output` of the requested model type. |
 
 `configured_cost_experiments` enables all six known controls when its environment variable is unset; an explicit empty value disables them. Unknown names fail. Controls and affected stages are defined by `COST_EXPERIMENT_STAGES` and are recorded per run/call.
+
+Disabling those cost experiments does not disable Analysis/Plotting caching. The development harness passes the runtime-only cache-policy override for explicit cache-off comparisons. It otherwise reuses production agents, SQL acceptance, scoped validators, scheduling and rendering. Worker-local adapters supply frozen summaries (the production acceptance helper normally recomputes them), capture invocation/result/selection identities, and optionally extend compatible schemas/metadata validation. No production prompt, contract shape, repair limit or stage default is changed by importing the harness.
+
+Harness manifests, code/input snapshots, full accepted profiles, SDK/provider-bound captures, semantic review records and external-agent iteration gates live under `harness/`; experimental artifacts are isolated under its ignored `outputs/` and fixture folders. Its tests are explicitly collected with `pytest harness/tests`. It does not invoke ordinary run retention or the application CSV experiment ledger. See the [source-checked implementation reference](harness/IMPLEMENTATION_SPEC.md) for the private bindings and [usage guide](harness/README.md) for budgets, approval and evaluation limits. Saved-run production persistence remains unchanged.
+
+Harness evaluation preserves per-result scenario checks and aggregates failures under each declared obligation; duplicate legacy check IDs fail explicitly. Coordinate checks use stable result/typed-selection comparison identities while view/event IDs remain trial-specific. Child gates require complete observed baseline/parent scenario/repetition coverage and matching comparisons. Named replay cases carry an explicit evidence, acceptance, plotting or analytical evaluation kind in their frozen trial plan. Evidence-only cases report unobserved assessments without executing SQL acceptance. The mixed-unit case renders its two recorded variants and inspects actual trace axes plus declared y-measure mappings using case-specific recorded unit evidence; general semantic/coverage questions remain review obligations.
 
 **Recorded model events:** `model_call` started/completed, `contract_schema`, `reasoning`, `reasoning_status`, `model_text`, `tool_call`, `model_message`, `cache_usage`, `model_cycle`, and `model_failure`. Each call uses a generated `call_id`; messages and usage are correlated through it. Streaming text is buffered and flushed about every 0.5 seconds or at completed messages. The failure category string is a runtime diagnostic and does not itself decide whether the workflow skips a chart.
 
@@ -434,10 +444,10 @@ Per-run layout is owned by `RunWorkspace`:
 
 | UI surface / helper | Data path and behavior |
 | --- | --- |
-| Run: `render_run`, `_collect_run`, `render_timeline`, `render_stream` | Active fragment polls every 0.5 seconds. Draft inputs remain in Streamlit session state. Stage progress derives from event strings; streamed records remain on disk in full. |
-| Results: `render_results` | Always shows outcome and usage when state exists; chart dashboard requires `status == 'complete'`. Groups analyses by concept, joins charts by result index, shows skipped warnings, methodology and any saved findings. A failed run's accepted charts are not shown as a dashboard. |
+| Run: `render_run`, `_collect_run`, `render_timeline`, `render_stream` | Active fragment polls every 0.5 seconds. Draft inputs remain in Streamlit session state. Stage expanders have stable run/phase keys and a constant initially collapsed default, preserving browser open/closed state when labels/status change. Stage progress derives from event strings. The chronological stream retains the full filtered chronology without an entry cap. Recorded tool-use inputs describe query relations, calculations, filters, grouping, ordering and explicit SQL limits, or schema/category inspections; results update the same entry through `(call_id, toolUseId)` correlation, showing preview row counts, truncation, fields and single-row scalar values rather than row dumps. Completed assistant messages supply inputs; legacy tool-name-only events are omitted because they carry no useful detail. Pending inspections remain marked until a correlated tool result is recorded. Conceptual rejection/repair pairs with identical structured issues become one correction entry listing each issue path/message, supplied and expected values, and retry status. Individual query clauses and result field/value summaries are shortened to 240 characters; structured validation issues are retained. Milestones and concise plan summaries remain visible; raw model prose, cache/cycle bookkeeping and payload dumps remain in Technical Details and on disk in full. |
+| Results: `render_results` | Always shows outcome and usage when state exists; chart dashboard requires `status == 'complete'`. Groups analyses by concept, joins charts by result index, shows methodology and any saved findings. Quality warnings and skipped-chart diagnostics appear under their respective stages in Technical Details, without yellow warning boxes on Results; missing chart artifacts use a caption. The optional trace link is an H2 heading labelled “Langfuse Full Trace”. A failed run's accepted charts are not shown as a dashboard. |
 | Data Model: `render_data_model` | Uses plan and built schemas for the ERD; edges use declared key pairs. Reads raw/main table previews from the saved database, including for failed runs. Supports older `target_model` nesting as a display fallback. |
-| Technical Details: `render_technical` | Reads attempts, stage events, dbt outputs and recorded model messages/contracts; offers the run dictionary as a JSON download. |
+| Technical Details: `render_technical` | Reads attempts, stage events, dbt outputs and recorded model messages/contracts; offers the run dictionary as a JSON download. Source profiling, Conceptual modelling, Analysis and Plotting each have a collapsed “Unresolved issues” field. Duplicate/orphan notices derive from source records; Analysis warnings and skipped-chart errors stay with their owning stages. Conceptual assumptions and unresolved questions sit inside its field. Saved finding caveats have their own interpretation section; legacy aggregate warnings without attributable provenance appear under Other run diagnostics rather than being assigned a guessed stage. |
 | Progress: `project_progress`, `STAGE_PHASE`, `PHASES` | Projects stage/kind strings into phases and repair counts. The dormant finding phase is omitted from the live timeline when it has no events. UI projection does not control execution. |
 | Formatting: `format_chart`, `display_table`, `concise_numbers`, `finding_bullets` | Formats loaded display objects and limits displayed finding bullets. Figure title is removed for UI presentation; saved chart files and analytical tables are not rewritten. |
 | Saved mode: `load_saved_run` | Reads a directory's `result.json` or explicit file, requires run ID and terminal status, and replaces `run_dir` with the selected copy's directory. No Pydantic migration or workflow is invoked. |
@@ -477,9 +487,9 @@ Numeric limits read `MODELLM_<FIELD_NAME_IN_UPPERCASE>`. Default production admi
 | Change | Sources/consumers to inspect together | Existing verification evidence locations |
 | --- | --- | --- |
 | Conceptual field, reference, grain or relationship contract | `contracts.py`, conceptual prompt, `agents.conceptual`, `plan_issues`, dbt prompt, built checks, diagram/UI | `test_execution_contracts.py` (including unimplemented-process checks), `test_agent_workflow.py` |
-| Generated dbt format or SQL permissions | `DbtFile`, `DbtImplementation`, modelling prompt, workflow expected set, `sql_policy.py`, `dbt.py` | `test_release.py`, `test_calendar_sql.py`, `test_agent_workflow.py`, container smoke |
-| Analysis query/qualification/semantics | `AnalysisPlan` graph, Analysis prompt/payload/tools, SQL policy, `analysis_statement`, acceptance, stored executed SQL, Plotting and UI | `test_analysis_boundary.py`, `test_analysis_results.py`, `test_execution_contracts.py`, `test_agent_workflow.py` |
-| Plot catalogue, arguments, selection or renderer | `PlotSpec`, `ResultFilter`, `PLOTTING`, Analysis catalogue context, `agents.plot`, scoped validator, final guard, artifacts/UI associations | `test_plot_context.py`, `test_plot_healing.py`, plot tests in `test_context_cost.py`, `test_execution_contracts.py`, `test_presentation.py` |
+| Generated dbt format or SQL permissions | `DbtFile`, `DimensionalPlan`, modelling prompt, workflow expected set, `sql_policy.py`, `dbt.py` | `test_release.py`, `test_calendar_sql.py`, `test_agent_workflow.py`, container smoke |
+| Analysis query/qualification/semantics | `AnalyticalPlan` graph, Analysis prompt/payload/tools, SQL policy, `analysis_statement`, acceptance, stored executed SQL, Plotting and UI | `test_analysis_boundary.py`, `test_analysis_results.py`, `test_execution_contracts.py`, `test_agent_workflow.py` |
+| Plot catalogue, arguments, selection or renderer | `PlottingPlan`, `ResultFilter`, `PLOTTING`, Analysis catalogue context, `agents.plot`, scoped validator, final guard, artifacts/UI associations | `test_plot_context.py`, `test_plot_healing.py`, plot tests in `test_context_cost.py`, `test_execution_contracts.py`, `test_presentation.py` |
 | Finding/evidence code | Finding schemas, `ANALYSIS_FINDING`, `agents.interpret`, result tools, registry, `render_finding`, dormant workflow and saved UI | Generation/evidence tests retired while the stage is disabled; `test_agent_workflow.py` verifies it stays disabled and `test_saved_run.py` preserves presentation of saved findings |
 | Stage names, events or run-record keys | Workflow/runtime emitters, `RunState`, `RunRecord`, progress/live/views, usage and ledger | `test_run.py`, `test_saved_run.py`, `test_agent_workflow.py`, `test_context_cost.py`, `test_telemetry.py` |
 | Runtime/caching/model/budget settings | `config.py`, `agent_runtime.py`, `context_cost.py`, `execution.py`, `usage.py`, deployment env | `test_model_selection.py`, `test_sonnet55.py`, `test_context_cost.py`, `test_release.py` |
@@ -603,7 +613,7 @@ FactPlan(Contract)
 ```
 
 ```text
-AnalyticalPlan(Contract)
+ConceptualPlan(Contract)
   business_processes: list[BusinessProcessPlan]  [required]
   dimensions: list[DimensionPlan]  [required]
   facts: list[FactPlan]  [required]
@@ -618,7 +628,7 @@ DbtFile(Contract)
 ```
 
 ```text
-DbtImplementation(Contract)
+DimensionalPlan(Contract)
   files: list[DbtFile]  [required]
   explanation: str  [required]
 ```
@@ -678,7 +688,7 @@ AnalysisSpec(Contract)
 ```
 
 ```text
-AnalysisPlan(Contract)
+AnalyticalPlan(Contract)
   analyses: list[AnalysisSpec]  [required]  [min_length=1]
   qualifications: list[SharedQualification]  [required]
   warnings: list[str]  [required]
@@ -769,7 +779,7 @@ AcceptedAnalysisResult(Contract)
 ```
 
 ```text
-PlotSpec(Contract)
+PlottingPlan(Contract)
   function: str  [required]
   columns: dict[str, Any]  [required]
   filters: list[ResultFilter]  [required]
@@ -904,27 +914,28 @@ The following index covers module-level functions and direct class methods in `a
 configured_model_id(stage: str | None=None) -> str
 automatic_tool_choice_model(model_class)
 async automatic_tool_choice_model.AutomaticToolChoiceModel.stream(self, *args, tool_choice=None, **kwargs)
-async _invoke(prompt: str | list[dict], schema: type[T], stage: str, emit: Callable, system_prompt: str, tools: list | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None, context_directory: Path | None=None, limits: dict[str, int] | None=None) -> T
+async _invoke(prompt: str | list[dict], schema: type[T], stage: str, emit: Callable, system_prompt: str, tools: list | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None, context_directory: Path | None=None, limits: dict[str, int] | None=None, cache_policy: Literal['default', 'disabled']='default') -> T
+_invoke.explicit_checkpoint(value)
 _invoke.flush_stream()
-invoke(prompt: str | list[dict], schema: type[T], stage: str, emit: Callable, system_prompt: str, tools: list | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None, context_directory: Path | None=None, limits: dict[str, int] | None=None) -> T
+invoke(prompt: str | list[dict], schema: type[T], stage: str, emit: Callable, system_prompt: str, tools: list | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None, context_directory: Path | None=None, limits: dict[str, int] | None=None, cache_policy: Literal['default', 'disabled']='default') -> T
 ```
 
 ### Signatures in [src/agents.py](src/agents.py)
 
 ```text
-conceptual(request: str, profiles: dict, relationships: list[dict], emit: Callable, feedback: list[ValidationIssue] | None=None, previous: AnalyticalPlan | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> AnalyticalPlan
-implement(plan: AnalyticalPlan, profiles: dict, relationships: list[dict], emit: Callable, failure: str='', previous: DbtImplementation | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> DbtImplementation
-analyse(request: str, plan: AnalyticalPlan, model_schemas: dict, summaries: dict, emit: Callable, database: Path, feedback: str='', previous: AnalysisPlan | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> AnalysisPlan
+conceptual(request: str, profiles: dict, relationships: list[dict], emit: Callable, feedback: list[ValidationIssue] | None=None, previous: ConceptualPlan | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> ConceptualPlan
+implement(plan: ConceptualPlan, profiles: dict, relationships: list[dict], emit: Callable, failure: str='', previous: DimensionalPlan | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> DimensionalPlan
+analyse(request: str, plan: ConceptualPlan, model_schemas: dict, summaries: dict, emit: Callable, database: Path, feedback: str='', previous: AnalyticalPlan | None=None, *, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> AnalyticalPlan
 interpret(spec: AnalysisSpec, result: AcceptedAnalysisResult, emit: Callable, db: DuckDBResultTools, feedback: str='', previous: AnalysisFinding | None=None, *, executed_sql: str, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> AnalysisFinding
-plot(spec: AnalysisSpec, result: AcceptedAnalysisResult, emit: Callable, database: Path, selection: list[ResultFilter] | None=None, *, original_request: str, frame: pd.DataFrame, title: str | None=None, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> PlotSpec
+plot(spec: AnalysisSpec, result: AcceptedAnalysisResult, emit: Callable, database: Path, selection: list[ResultFilter] | None=None, *, original_request: str, frame: pd.DataFrame, title: str | None=None, cost_experiments: frozenset[str] | None=None, trace_attributes: Mapping[str, AttributeValue] | None=None) -> PlottingPlan
 ```
 
 ### Signatures in [src/analysis.py](src/analysis.py)
 
 ```text
 AnalysisAcceptanceError.__init__(self, index: int, title: str, error: Exception)
-analysis_statement(spec: AnalysisSpec, plan: AnalysisPlan, model_names: list[str]) -> str
-accept_analyses(database: Path, model_names: list[str], analysis: AnalysisPlan, *, max_charts: int | None=None) -> list[tuple[AnalysisSpec, AcceptedAnalysisResult]]
+analysis_statement(spec: AnalysisSpec, plan: AnalyticalPlan, model_names: list[str]) -> str
+accept_analyses(database: Path, model_names: list[str], analysis: AnalyticalPlan, *, max_charts: int | None=None) -> list[tuple[AnalysisSpec, AcceptedAnalysisResult]]
 validate_result_semantics(spec: AnalysisSpec, result: AcceptedAnalysisResult) -> None
 summarize_models(database: Path, model_names: list[str]) -> dict
 load_result_frame(database: Path, result: AcceptedAnalysisResult) -> pd.DataFrame
@@ -962,7 +973,7 @@ FieldRef.reference_target(self)
 @model_validator(mode='after')
 FieldDefinition.definition_shape(self)
 @model_validator(mode='after')
-DbtImplementation.complete_files(self)
+DimensionalPlan.complete_files(self)
 @model_validator(mode='after')
 QueryDefinition.qualification_choice(self)
 @model_validator(mode='after')
@@ -977,7 +988,7 @@ EarlyValidatedAnalysisFinding.validate_statement_structure(self)
 registered_plot_templates() -> list[str]
 validate_plot_template(options: dict) -> None
 @model_validator(mode='after')
-PlotSpec.column_mappings(self)
+PlottingPlan.column_mappings(self)
 ```
 
 ### Signatures in [src/data.py](src/data.py)
@@ -1001,7 +1012,7 @@ connect(database: Path, *, read_only=False, ingest=False)
 ### Signatures in [src/dbt.py](src/dbt.py)
 
 ```text
-write_project(project: Path, database: Path, source_names: list[str], implementation: DbtImplementation) -> None
+write_project(project: Path, database: Path, source_names: list[str], implementation: DimensionalPlan) -> None
 run_dbt(project: Path, command: str) -> dict
 dbt_results(project: Path) -> list[dict]
 ```
@@ -1051,14 +1062,14 @@ refresh(root: Path)
 ```text
 field_inputs(field: ModelOutput) -> list[FieldRef]
 ref_container(ref: FieldRef) -> tuple[str, str]
-plan_issues(plan: AnalyticalPlan, profiles: dict, relationships: list[dict] | None=None) -> list[ValidationIssue]
+plan_issues(plan: ConceptualPlan, profiles: dict, relationships: list[dict] | None=None) -> list[ValidationIssue]
 plan_issues.issue(code, path, message, expected=None, observed=None)
 plan_issues.reference(ref, path, declared)
 plan_issues.output(model, name, path)
 plan_issues.local_sources(column, trail=())
 plan_issues.cycles(graph, code)
 plan_issues.cycles.visit(node, trail)
-validate_built_models(database: Path, plan: AnalyticalPlan, built_schemas: dict[str, dict[str, str]]) -> list[str]
+validate_built_models(database: Path, plan: ConceptualPlan, built_schemas: dict[str, dict[str, str]]) -> list[str]
 ```
 
 ### Signatures in [src/run.py](src/run.py)
@@ -1161,7 +1172,15 @@ render_app(*, saved_run=None)
 ### Signatures in [src/ui/live.py](src/ui/live.py)
 
 ```text
+_plan_summary(stage, payload)
+_short(value, limit=240)
+_query_description(sql)
+_tool_description(name, payload)
+_tool_result(result)
+_result_description(result)
+_validation_summary(event, retrying)
 stream_text(events)
+stream_text.append(event, message)
 render_stream(events)
 _proposals(events, name)
 _reasoning(events)
@@ -1216,6 +1235,7 @@ render_usage(state: RunState)
 render_results(state: RunState | None)
 _preview(database, schema, name)
 render_data_model(state: RunState | None)
+_unresolved_issues(issues, *, key)
 render_technical(state: RunState | None)
 ```
 
@@ -1231,15 +1251,15 @@ summarize_usage(events: list[dict]) -> dict
 ```text
 plot_capabilities() -> dict
 plot_descriptions() -> dict[str, str]
-validate_plot_arguments(plot: PlotSpec) -> None
+validate_plot_arguments(plot: PlottingPlan) -> None
 representation_selections(database: Path, spec: AnalysisSpec, result: AcceptedAnalysisResult)
-validate_plot_spec(plot: PlotSpec, result: AcceptedAnalysisResult, selection: list[ResultFilter] | None=None) -> None
-accepted_result_plot_schema(result: AcceptedAnalysisResult, selection: list[ResultFilter] | None=None, *, frame: pd.DataFrame, title: str='') -> type[PlotSpec]
+validate_plot_spec(plot: PlottingPlan, result: AcceptedAnalysisResult, selection: list[ResultFilter] | None=None) -> None
+accepted_result_plot_schema(result: AcceptedAnalysisResult, selection: list[ResultFilter] | None=None, *, frame: pd.DataFrame, title: str='') -> type[PlottingPlan]
 @model_validator(mode='after')
-accepted_result_plot_schema.AcceptedResultPlotSpec.accepted_result_contract(self)
-validate_plot_candidate(frame: pd.DataFrame, plot: PlotSpec, result: AcceptedAnalysisResult, selection: list[ResultFilter], title: str)
+accepted_result_plot_schema.AcceptedResultPlottingPlan.accepted_result_contract(self)
+validate_plot_candidate(frame: pd.DataFrame, plot: PlottingPlan, result: AcceptedAnalysisResult, selection: list[ResultFilter], title: str)
 filter_frame(frame: pd.DataFrame, filters: list[ResultFilter]) -> pd.DataFrame
-render_plot(frame: pd.DataFrame, plot: PlotSpec, title: str)
+render_plot(frame: pd.DataFrame, plot: PlottingPlan, title: str)
 ```
 
 ### Signatures in [src/worker.py](src/worker.py)
@@ -1253,12 +1273,12 @@ main() -> None
 ```text
 run(paths: list[Path], request: str, root: Path, *, on_event: Callable | None=None, workspace: RunWorkspace | None=None, settings: ReleaseSettings | None=None) -> RunState
 _run(paths: list[Path], request: str, workspace: RunWorkspace, *, on_event: Callable | None=None) -> RunState
-_save_dbt_attempt(record: RunRecord, number: int, implementation: DbtImplementation) -> None
+_save_dbt_attempt(record: RunRecord, number: int, implementation: DimensionalPlan) -> None
 _track(record: RunRecord) -> None
 _prepare_sources(record: RunRecord, paths: list[Path]) -> tuple[list[str], dict, list[dict]]
-_build_conceptual_model(record: RunRecord, request: str, names: list[str], profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> AnalyticalPlan
-_build_models(record: RunRecord, names: list[str], plan: AnalyticalPlan, profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> list[str]
-_accept_analysis(record: RunRecord, request: str, plan: AnalyticalPlan, model_names: list[str], cost_experiments: frozenset[str]) -> tuple[AnalysisPlan, AcceptedResults]
+_build_conceptual_model(record: RunRecord, request: str, names: list[str], profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> ConceptualPlan
+_build_models(record: RunRecord, names: list[str], plan: ConceptualPlan, profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> list[str]
+_accept_analysis(record: RunRecord, request: str, plan: ConceptualPlan, model_names: list[str], cost_experiments: frozenset[str]) -> tuple[AnalyticalPlan, AcceptedResults]
 _generate_findings(record: RunRecord, accepted_results: AcceptedResults, cost_experiments: frozenset[str]) -> None
 _generate_findings.register_evidence(evidence)
 _render_visualisations(record: RunRecord, accepted_results: AcceptedResults, cost_experiments: frozenset[str]) -> None

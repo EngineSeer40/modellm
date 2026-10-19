@@ -4,44 +4,216 @@ import json
 from pathlib import Path
 
 import streamlit as st
+import sqlglot
+from sqlglot import exp
 
 from src.run import RunProgress, RunState
 
 from .progress import STAGE_PHASE, project_progress
 
 
+def _plan_summary(stage, payload):
+    """Summarise current and saved contracts without dumping generated payloads."""
+    if stage == "conceptual modelling":
+        target = payload.get("target_model", payload)
+        if not isinstance(target, dict):
+            return "ConceptualPlan proposal received; model structure requires correction"
+        facts, dimensions = target.get("facts", []), target.get("dimensions", [])
+        if not all(isinstance(items, list) and all(isinstance(item, dict) for item in items)
+                   for items in (facts, dimensions)):
+            return "ConceptualPlan proposal received; fact/dimension structure requires correction"
+        names = [item.get("name", "") for item in facts + dimensions]
+        return f"ConceptualPlan proposed: {len(facts)} facts, {len(dimensions)} dimensions · " + ", ".join(names)
+    if stage == "generating dbt models":
+        files = payload.get("files", [])
+        if not isinstance(files, list) or not all(isinstance(item, dict) for item in files):
+            return "DimensionalPlan proposal received; file structure requires correction"
+        return f"DimensionalPlan proposed: {len(files)} files · " + ", ".join(item.get("path", "") for item in files)
+    if stage == "analytical interpretation":
+        analyses = payload.get("analyses", [])
+        if not isinstance(analyses, list) or not all(isinstance(item, dict) for item in analyses):
+            return "AnalyticalPlan proposal received; analysis structure requires correction"
+        return f"AnalyticalPlan proposed: {len(analyses)} analyses · " + "; ".join(item.get("title", "") for item in analyses)
+    if stage == "visualisation generation":
+        columns = payload.get("columns", {})
+        channels = (", ".join(f"{key}={value}" for key, value in columns.items())
+                    if isinstance(columns, dict) else "column mappings awaiting validation")
+        return f"Plotting Plan proposed: {payload.get('function', '')} · {channels}"
+    return None
+
+
+def _short(value, limit=240):
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _query_description(sql):
+    """Describe represented SQL operations, without guessing a business intent."""
+    try:
+        query = sqlglot.parse_one(sql, read="duckdb")
+        if query is None:
+            return "Query submitted; SQL details are in Technical Details"
+        tables = list(dict.fromkeys(table.name for table in query.find_all(exp.Table)))
+        parts = ["Querying " + ", ".join(tables)] if tables else ["Evaluating query"]
+        outputs = query.expressions if isinstance(query, exp.Select) else []
+        calculations = [item.sql(dialect="duckdb") for item in outputs
+                        if any(item.find_all(exp.AggFunc))]
+        if calculations:
+            parts.append("calculations: " + _short("; ".join(calculations)))
+        elif outputs:
+            parts.append("fields: " + _short(", ".join(item.alias_or_name or item.sql(dialect="duckdb") for item in outputs)))
+        for key, label in (("where", "filter"), ("group", "grouped by"), ("having", "group filter"),
+                           ("order", "ordered by"), ("limit", "SQL row limit")):
+            clause = query.args.get(key)
+            if clause is not None:
+                values = clause.expressions or ([clause.this] if clause.this is not None else [])
+                parts.append(label + ": " + _short(", ".join(item.sql(dialect="duckdb") for item in values)))
+        return " · ".join(parts)
+    except (sqlglot.errors.ParseError, ValueError, TypeError):
+        return "Query submitted; SQL details are in Technical Details"
+
+
+def _tool_description(name, payload):
+    if name == "query_data":
+        return _query_description(payload.get("sql", ""))
+    if name == "describe_model":
+        return f"Inspecting schema and row count of {payload.get('model', '')}"
+    if name == "list_models":
+        return "Listing validated models available to Analysis"
+    if name == "category_counts":
+        return f"Checking category frequencies for {payload.get('field', '')} (up to {payload.get('limit', 20)} values)"
+    return None
+
+
+def _tool_result(result):
+    """Read recorded tool content; never execute or re-query saved results."""
+    for block in result.get("content", []):
+        if isinstance(block.get("json"), dict):
+            return block["json"]
+        if isinstance(block.get("text"), str):
+            try:
+                value = json.loads(block["text"])
+                if isinstance(value, dict):
+                    return value
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+def _result_description(result):
+    data = _tool_result(result)
+    if result.get("status") == "error":
+        content = "; ".join(_short(block.get("text", block.get("json", "")))
+                            for block in result.get("content", []))
+        return "Inspection failed: " + content
+    if not data:
+        return "Inspection completed; result details are in Technical Details"
+    if "row_count" in data:
+        description = f"Returned {data['row_count']} preview rows"
+        if data.get("truncated"):
+            description += " (preview limit reached; more rows available)"
+        description += "; fields: " + _short(", ".join(map(str, data.get("columns", []))))
+        rows = data.get("rows", [])
+        if len(rows) == 1 and isinstance(rows[0], dict):
+            description += "; values: " + _short(", ".join(f"{key}={value}" for key, value in rows[0].items()))
+        return description
+    if "model" in data:
+        fields = ", ".join(f"{field['name']} ({field['type']})" for field in data.get("columns", []))
+        return f"{data['rows']:,} rows; fields: " + _short(fields)
+    if "models" in data:
+        return "Available models: " + ", ".join(map(str, data["models"]))
+    if "values" in data:
+        values = data["values"]
+        description = "; ".join(f"{item.get('value')}: {item.get('count')} rows" for item in values[:5])
+        return "Category counts: " + _short(description) + (" (more categories available)" if data.get("truncated") else "")
+    return "Inspection completed; result details are in Technical Details"
+
+
+def _validation_summary(event, retrying):
+    detail = event.get("detail", {})
+    issues = detail.get("issues", [])
+    attempt = detail.get("attempt", detail.get("revision", ""))
+    lines = [f"Plan attempt {attempt} needs revision" if retrying else f"Plan attempt {attempt} rejected"]
+    for issue in issues:
+        if not isinstance(issue, dict):
+            lines.append("  • " + str(issue))
+            continue
+        text = f"{issue.get('path', '')}: {issue.get('message', issue.get('code', ''))}"
+        if issue.get("observed") is not None:
+            text += f"; supplied: {_short(issue['observed'])}"
+        if issue.get("expected") is not None:
+            text += f"; expected: {_short(issue['expected'])}"
+        lines.append("  • " + text)
+    if retrying:
+        lines.append("Revising the plan with these validation issues.")
+    return "\n".join(lines)
+
+
 def stream_text(events):
-    """Readable chronological messages; full payloads remain in Technical Details."""
+    """Project the full investigation and corrections from recorded evidence."""
     entries = []
-    for event in events:
-        kind = event.get("kind", "")
-        if kind in {"contract_schema", "model_message", "failure", "repair", "contract_check"}:
-            continue
-        message = str(event.get("message", ""))
-        if kind in {"model_text", "reasoning"}:
-            # Text deltas belong to one continuous thought, not separate JSON records.
-            if entries and entries[-1][0] == (event.get("stage"), kind):
-                entries[-1][1] += message
-                continue
-        if message.lstrip().startswith(("{", "[")):
-            message = "Structured output recorded in Technical Details."
-        if len(message) > 1500 and kind not in {"model_text", "reasoning"}:
-            message = message[:1500] + "…"
-        if event.get("stage") == "validation and repair" or (kind == "result" and event.get("stage") == "dbt compile/build/test"):
-            continue
+    pending = {}
+    contracts = {"ConceptualPlan", "DimensionalPlan", "AnalyticalPlan", "PlottingPlan",
+                 "AcceptedResultPlottingPlan", "DbtImplementation", "AnalysisPlan",
+                 "PlotSpec", "AcceptedResultPlotSpec"}
+
+    def append(event, message):
         time = event.get("time", "").replace("T", " ")
-        entries.append([(event.get("stage"), kind), f"[{time}] {event.get('stage', '')}\n{message}"])
-    return "\n\n".join(entry[1] for entry in entries)
+        entries.append(f"[{time}] {event.get('stage', '')} · {message}")
+        return len(entries) - 1
+
+    for index, event in enumerate(events):
+        kind, stage = event.get("kind", ""), event.get("stage", "")
+        detail = event.get("detail", {})
+        if kind == "model_message":
+            message = detail.get("message", {})
+            if not isinstance(message, dict):
+                continue
+            for block in message.get("content", []):
+                tool = block.get("toolUse", {})
+                payload = tool.get("input")
+                key = (detail.get("call_id", ""), tool.get("toolUseId"))
+                if isinstance(payload, dict):
+                    if tool.get("name") in contracts:
+                        summary = _plan_summary(stage, payload)
+                        if summary:
+                            append(event, summary)
+                    else:
+                        summary = _tool_description(tool.get("name"), payload)
+                        if summary:
+                            position = append(event, summary + "\n  Running inspection…")
+                            pending[key] = (position, summary, event)
+                result = block.get("toolResult")
+                if isinstance(result, dict):
+                    key = (detail.get("call_id", ""), result.get("toolUseId"))
+                    if key in pending:
+                        position, summary, original = pending.pop(key)
+                        time = original.get("time", "").replace("T", " ")
+                        entries[position] = f"[{time}] {original.get('stage', '')} · {summary}\n  {_result_description(result)}"
+        elif stage == "conceptual modelling" and detail.get("issues") and kind in {"failure", "repair"}:
+            # The workflow emits rejection and repair separately for the same issues.
+            next_event = events[index + 1] if index + 1 < len(events) else {}
+            if kind == "failure" and next_event.get("stage") == stage and next_event.get("kind") == "repair" and next_event.get("detail", {}).get("issues") == detail["issues"]:
+                continue
+            append(event, _validation_summary(event, retrying=kind == "repair"))
+        elif kind in {"start", "done", "repair", "failure", "model_failure", "contract_check"}:
+            message = str(event.get("message", ""))
+            if message and not message.lstrip().startswith(("{", "[")):
+                append(event, message)
+    return "\n\n".join(entries)
 
 
 def render_stream(events):
-    if events:
-        st.code(stream_text(events), language=None, wrap_lines=True)
+    if text := stream_text(events):
+        st.code(text, language=None, wrap_lines=True)
     else:
         st.caption("Agent activity will appear here when the run starts.")
 
 
 def _proposals(events, name):
+    legacy_names = {"ConceptualPlan": "AnalyticalPlan", "DimensionalPlan": "DbtImplementation",
+                    "AnalyticalPlan": "AnalysisPlan"}
+    names = {name, legacy_names.get(name)}
     proposals = []
     for event in events:
         message = event.get("detail", {}).get("message", {})
@@ -49,7 +221,7 @@ def _proposals(events, name):
             continue
         for block in message.get("content", []):
             tool = block.get("toolUse", {})
-            if tool.get("name") == name and isinstance(tool.get("input"), dict):
+            if tool.get("name") in names and isinstance(tool.get("input"), dict):
                 proposals.append(tool["input"])
     return proposals
 
@@ -76,7 +248,7 @@ def _reasoning(events):
 
 
 def _conceptual(state, events, *, decisions_as_table=False):
-    proposals = _proposals(events, "AnalyticalPlan")
+    proposals = _proposals(events, "ConceptualPlan")
     plan = state.get("plan") or (proposals[-1] if proposals else None)
     if not plan:
         st.caption("The agent is establishing fact grains, measures, dimensions and relationships. The proposal will appear when returned.")
@@ -110,7 +282,7 @@ def _conceptual(state, events, *, decisions_as_table=False):
 
 
 def _dbt(state, events):
-    proposals = _proposals(events, "DbtImplementation")
+    proposals = _proposals(events, "DimensionalPlan")
     if proposals:
         proposal = proposals[-1]
         files = proposal.get("files", [])
@@ -121,7 +293,7 @@ def _dbt(state, events):
             st.write(proposal["explanation"])
         for file in files:
             if file["path"].endswith(".sql"):
-                with st.expander(file["path"]):
+                with st.expander(file["path"], key=f"dbt_file_{state.get('run_id', 'draft')}_{file['path']}"):
                     st.code(file.get("content", ""), language="sql")
 
 
@@ -134,7 +306,10 @@ def render_timeline(state: RunState | RunProgress):
             continue
         label = "Running" if phase["status"] in {"repairing", "checking"} else phase["status"].capitalize()
         title = "Building data models" if index == 3 else phase["label"]
-        with st.expander(f"{title} · {label}", expanded=phase["status"] != "pending"):
+        # A stable key preserves browser open/closed state while the label changes.
+        # Keep the initial expanded value constant across polling updates too.
+        with st.expander(f"{title} · {label}", expanded=False,
+                         key=f"stage_{state.get('run_id', 'draft')}_{index}"):
             st.write("Building the declared facts and dimensions." if index == 3 else phase["detail"])
             if phase["status"] == "pending":
                 st.caption("Waiting for earlier stages to finish.")
@@ -156,7 +331,7 @@ def render_timeline(state: RunState | RunProgress):
             elif index == 3:
                 _dbt(state, phase_events)
             elif index == 4:
-                proposals = _proposals(phase_events, "AnalysisPlan")
+                proposals = _proposals(phase_events, "AnalyticalPlan")
                 analysis = state.get("analysis") or (proposals[-1] if proposals else {})
                 for item in analysis.get("analyses", []):
                     st.markdown(f"**{item['title']}**")

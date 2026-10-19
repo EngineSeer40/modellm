@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from importlib.metadata import version
 from pathlib import Path
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from opentelemetry.util.types import AttributeValue
 
@@ -53,7 +53,17 @@ async def _invoke(
     trace_attributes: Mapping[str, AttributeValue] | None = None,
     context_directory: Path | None = None,
     limits: dict[str, int] | None = None,
+    cache_policy: Literal["default", "disabled"] = "default",
 ) -> T:
+    if cache_policy not in {"default", "disabled"}:
+        raise ValueError(f"Unknown cache policy: {cache_policy}")
+    def explicit_checkpoint(value):
+        if isinstance(value, dict):
+            return "cachePoint" in value or any(explicit_checkpoint(item) for item in value.values())
+        return isinstance(value, list) and any(explicit_checkpoint(item) for item in value)
+
+    if cache_policy == "disabled" and explicit_checkpoint(prompt):
+        raise ValueError("Disabled cache policy cannot receive explicit cache checkpoints")
     from botocore.config import Config
     from strands import Agent
     from strands.models import BedrockModel, CacheConfig
@@ -64,7 +74,7 @@ async def _invoke(
     sonnet_55 = "anthropic.claude-sonnet-5-5" in model_id
     sonnet_5 = model_id.split("anthropic.")[-1] in {"claude-sonnet-5", "claude-sonnet-5-5"}
     nova_reasoning = "amazon.nova-2-lite" in model_id
-    cache_enabled = (stage in {
+    cache_enabled = cache_policy != "disabled" and (stage in {
         "analytical interpretation", "generating dbt models",
         "analytical finding", "visualisation generation",
     } or stage == "conceptual modelling" and "conceptual_cache" in experiments) and (
@@ -105,6 +115,7 @@ async def _invoke(
         "strands_version": version("strands-agents"),
         "context_directory": str(offload_directory) if plugins else None,
         "limits": limits,
+        "cache_policy": cache_policy,
     }
     emit(stage, "model_call", f"Calling {model_id}", {
         "call_id": call_id, "model_id": model_id, "status": "started",
@@ -236,7 +247,8 @@ def invoke(
     trace_attributes: Mapping[str, AttributeValue] | None = None,
     context_directory: Path | None = None,
     limits: dict[str, int] | None = None,
+    cache_policy: Literal["default", "disabled"] = "default",
 ) -> T:
     return asyncio.run(_invoke(prompt, schema, stage, emit, system_prompt, tools,
                               cost_experiments=cost_experiments, context_directory=context_directory,
-                              trace_attributes=trace_attributes, limits=limits))
+                              trace_attributes=trace_attributes, limits=limits, cache_policy=cache_policy))

@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 from src import agents
 from src.visualisation import plot_descriptions
-from src.core.contracts import AcceptedAnalysisResult, AnalysisDimension, AnalysisMeasure, AnalysisSpec, PlotSpec, ResultColumnProfile, QueryDefinition, registered_plot_templates
+from src.core.contracts import AcceptedAnalysisResult, AnalysisDimension, AnalysisMeasure, AnalysisSpec, PlottingPlan, ResultColumnProfile, QueryDefinition, registered_plot_templates
 
 def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monkeypatch, tmp_path):
     spec = AnalysisSpec(title='Daily cohort events', concept_id='events_by_cohort', population_definition='Recorded events', question='How do events vary by day and cohort?', rationale='Compare the recorded event counts at daily cohort grain.', grain='one row per day and cohort', dimensions=[AnalysisDimension(field='event_day', semantic_type='temporal', description='Event date'), AnalysisDimension(field='cohort', semantic_type='categorical', description='Cohort')], measures=[AnalysisMeasure(field='event_count', semantic_type='count', description='Recorded events', additivity='additive')], visualisation_goal='Show the daily pattern for both cohorts.', query=QueryDefinition(kind='direct', sql='SELECT event_day, cohort, event_count FROM main.fact_events'), observation_rule=None)
@@ -17,7 +17,7 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
         captured['payload'] = {key: value for block in prompt for key, value in json.loads(block['text']).items()}
         captured['schema'] = schema
         captured['limits'] = kwargs['limits']
-        return PlotSpec(function='line', columns={'x': 'event_day', 'y': 'event_count'}, filters=[], options={})
+        return PlottingPlan(function='line', columns={'x': 'event_day', 'y': 'event_count'}, filters=[], options={})
     monkeypatch.setattr(agents, 'invoke', fake_invoke)
     request = 'Show the daily pattern for both cohorts as a multiple-line chart.'
     agents.plot(spec, result, lambda *args: None,

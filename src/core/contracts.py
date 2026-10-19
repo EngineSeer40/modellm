@@ -189,7 +189,7 @@ class FactPlan(Contract):
     )
 
 
-class AnalyticalPlan(Contract):
+class ConceptualPlan(Contract):
     business_processes: list[BusinessProcessPlan]
     dimensions: list[DimensionPlan]
     facts: list[FactPlan]
@@ -208,7 +208,7 @@ class DbtFile(Contract):
     content: str
 
 
-class DbtImplementation(Contract):
+class DimensionalPlan(Contract):
     files: list[DbtFile] = Field(description="Distinct flat paths: exactly the planned SQL models and one schema.yml; no sources declarations")
     explanation: str = Field(description="Implementation, limitations and actual repairs of the accepted plan; introduces no new business, relationship or cardinality assumptions")
 
@@ -304,7 +304,7 @@ class AnalysisSpec(Contract):
         description="Comparison, relationship or pattern the returned rows can communicate; presentation intent for Plotting, not a chart function, visual channel, uncomputed transformation or anticipated finding"
     )
 
-class AnalysisPlan(Contract):
+class AnalyticalPlan(Contract):
     analyses: list[AnalysisSpec] = Field(min_length=1)
     qualifications: list[SharedQualification] = Field(
         description="Shared populations used by qualified queries; otherwise an empty list"
@@ -503,7 +503,7 @@ def validate_plot_template(options: dict) -> None:
         )
 
 
-class PlotSpec(Contract):
+class PlottingPlan(Contract):
     function: str = Field(description="One Plotly Express function listed in available_plots whose meaning fits the accepted result")
     columns: dict[str, Any] = Field(
         description="Plotly Express column arguments for the chosen function, mapped to exact accepted field names or supported lists of names; no data arrays or presentation settings"

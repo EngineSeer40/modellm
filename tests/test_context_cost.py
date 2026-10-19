@@ -23,7 +23,7 @@ from src.visualisation import accepted_result_plot_schema, plot_capabilities, pl
 from src.config import ReleaseSettings, use_settings
 from src.execution import use_budget
 from src.context_cost import COST_EXPERIMENT_STAGES, configured_cost_experiments, tool_result_offload_plugins
-from src.core.contracts import AcceptedAnalysisResult, AnalysisPlan, AnalysisSpec, AnalyticalPlan, QueryDefinition, PlotSpec, ResultFilter
+from src.core.contracts import AcceptedAnalysisResult, AnalyticalPlan, AnalysisSpec, ConceptualPlan, QueryDefinition, PlottingPlan, ResultFilter
 from src.tools.analysis_tools import DuckDBAnalysisTools
 
 
@@ -56,7 +56,7 @@ def test_controls_default_on_validate_and_honor_explicit_snapshot(monkeypatch):
 def test_conceptual_controls_preserve_evidence_and_separate_only_repair_feedback(monkeypatch):
     captured = []
     monkeypatch.setattr(agents, "invoke", lambda *args, **kwargs: captured.append((args, kwargs)))
-    plan = AnalyticalPlan(business_processes=[], dimensions=[], facts=[], assumptions=[], unresolved_questions=[])
+    plan = ConceptualPlan(business_processes=[], dimensions=[], facts=[], assumptions=[], unresolved_questions=[])
     args = ("request", {"events": {"columns": []}}, [], lambda *args: None)
     agents.conceptual(*args, previous=plan, cost_experiments=frozenset())
     baseline = captured[-1][0]
@@ -75,13 +75,13 @@ def test_conceptual_controls_preserve_evidence_and_separate_only_repair_feedback
 def test_analysis_prompt_preserves_preview_controls_and_repair_context(monkeypatch, analytical_spec, tmp_path):
     captured = []
     monkeypatch.setattr(agents, "invoke", lambda *args, **kwargs: captured.append((args, kwargs)))
-    plan = AnalyticalPlan(business_processes=[], dimensions=[], facts=[], assumptions=[], unresolved_questions=[])
+    plan = ConceptualPlan(business_processes=[], dimensions=[], facts=[], assumptions=[], unresolved_questions=[])
     args = ("request", plan, {"fact_events": {"value": "INTEGER"}}, {}, lambda *a: None,
             tmp_path / "models.duckdb")
     with use_settings(ReleaseSettings(max_analyses=5, max_charts=7)):
         for controls in (frozenset(), frozenset({"small_analysis_previews"})):
             agents.analyse(*args, cost_experiments=controls)
-        previous = AnalysisPlan(analyses=[analytical_spec], qualifications=[], warnings=[])
+        previous = AnalyticalPlan(analyses=[analytical_spec], qualifications=[], warnings=[])
         agents.analyse(*args, previous=previous, feedback="Rejected query", cost_experiments=frozenset())
     assert captured[0][0][4] == agents.ANALYSIS
     assert captured[1][0][4].endswith(agents.ANALYSIS_PREVIEW_GUIDANCE)
@@ -114,7 +114,7 @@ def test_small_preview_keeps_explicit_limits_and_complete_acceptance(tmp_path, a
     assert tools.query_data_small_preview(sql, limit=100)["row_count"] == 100
     assert tools.query_data_small_preview(sql, limit=900)["row_count"] == 500
     assert tools.query_data_small_preview(sql + " LIMIT 3")["truncated"] is False
-    accepted = accept_analyses(database, ["fact_events"], AnalysisPlan(
+    accepted = accept_analyses(database, ["fact_events"], AnalyticalPlan(
         analyses=[analytical_spec], qualifications=[], warnings=[],
     ))
     assert accepted[0][1].row_count == 620
@@ -211,7 +211,7 @@ def test_workflow_snapshots_controls_across_repairs(monkeypatch, tmp_path):
     monkeypatch.setattr(workflow, "profile", lambda *a: {})
     monkeypatch.setattr(workflow, "relationships", lambda *a: [])
     monkeypatch.setattr(workflow, "record_run", lambda *a: None)
-    plan = AnalyticalPlan(business_processes=[], dimensions=[], facts=[], assumptions=[], unresolved_questions=[])
+    plan = ConceptualPlan(business_processes=[], dimensions=[], facts=[], assumptions=[], unresolved_questions=[])
     observed = []
     def conceptual(*args, **kwargs):
         observed.append(kwargs["cost_experiments"])
@@ -233,7 +233,7 @@ def test_workflow_snapshots_controls_across_repairs(monkeypatch, tmp_path):
 
 def test_unknown_template_is_rejected_before_rendering():
     with pytest.raises(ValidationError, match="Unknown Plotly template"):
-        PlotSpec(function="scatter_map", columns={"lat": "latitude", "lon": "longitude"},
+        PlottingPlan(function="scatter_map", columns={"lat": "latitude", "lon": "longitude"},
                  filters=[], options={"template": "plotly_light"})
 
 
@@ -257,7 +257,7 @@ def test_plot_agent_corrects_result_contract_inside_one_budgeted_invocation(
     class FakeBedrockModel(LocalModel):
         def __init__(self, **kwargs):
             configs.append(kwargs)
-            super().__init__([("AcceptedResultPlotSpec", bad), ("AcceptedResultPlotSpec", good)])
+            super().__init__([("AcceptedResultPlottingPlan", bad), ("AcceptedResultPlottingPlan", good)])
             self.client = SimpleNamespace(meta=SimpleNamespace(region_name=kwargs["region_name"]))
             models.append(self)
 
@@ -295,7 +295,7 @@ def test_scoped_plot_schemas_preserve_fields_and_isolate_result_and_selection():
         frame=pd.DataFrame({"value": [1], "variant": ["daily"]}))
     second_schema = accepted_result_plot_schema(second, frame=pd.DataFrame({"other": [2]}))
     assert first_schema.model_json_schema() == second_schema.model_json_schema()
-    assert set(first_schema.model_fields) == set(PlotSpec.model_fields)
+    assert set(first_schema.model_fields) == set(PlottingPlan.model_fields)
     payload = {"function": "bar", "columns": {"y": "value"},
                "filters": [item.model_dump() for item in selection], "options": {}}
     selection[0].values[0] = "monthly"
@@ -336,7 +336,7 @@ def test_plot_heals_render_failure_without_changing_nullable_data(plotting_model
     bad = {'function': 'scatter', 'columns': {'x': 'position', 'y': 'reading', 'size': 'reading'},
            'filters': [], 'options': {}}
     good = {**bad, 'columns': {'x': 'position', 'y': 'reading', 'color': 'reading'}}
-    instances = plotting_model([('AcceptedResultPlotSpec', bad), ('AcceptedResultPlotSpec', good)])
+    instances = plotting_model([('AcceptedResultPlottingPlan', bad), ('AcceptedResultPlottingPlan', good)])
     events = []
     settings = ReleaseSettings(max_model_calls=4)
     with use_settings(settings), use_budget(settings) as budget:
@@ -352,7 +352,7 @@ def test_plot_heals_render_failure_without_changing_nullable_data(plotting_model
 
 def test_plot_turn_limit_stops_uncorrectable_proposals(plotting_model, analytical_spec, tmp_path):
     bad = {'function': 'scatter', 'columns': {'x': 'missing'}, 'filters': [], 'options': {}}
-    instances = plotting_model([('AcceptedResultPlotSpec', bad)] * 5)
+    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 5)
     result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
         row_count=1, columns={'value': 'INTEGER'}, profile=[])
     events = []
@@ -370,7 +370,7 @@ def test_global_budget_is_not_local_plot_exhaustion(plotting_model, analytical_s
     from strands.types.exceptions import EventLoopException
 
     bad = {'function': 'scatter', 'columns': {'x': 'missing'}, 'filters': [], 'options': {}}
-    instances = plotting_model([('AcceptedResultPlotSpec', bad)] * 5)
+    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 5)
     result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
         row_count=1, columns={'value': 'INTEGER'}, profile=[])
     settings = ReleaseSettings(max_model_calls=1)

@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 from pydantic import model_validator
 
-from .core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlotSpec, ResultFilter, validate_plot_template
+from .core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlottingPlan, ResultFilter, validate_plot_template
 from .database import connect
 
 
@@ -128,7 +128,7 @@ def plot_descriptions() -> dict[str, str]:
     }
 
 
-def validate_plot_arguments(plot: PlotSpec) -> None:
+def validate_plot_arguments(plot: PlottingPlan) -> None:
     supported = plot_capabilities().get(plot.function)
     if supported is None:
         raise ValueError(f"Unsupported Plotly Express function: {plot.function}")
@@ -159,7 +159,7 @@ def representation_selections(database: Path, spec: AnalysisSpec, result: Accept
     return selections
 
 
-def validate_plot_spec(plot: PlotSpec, result: AcceptedAnalysisResult,
+def validate_plot_spec(plot: PlottingPlan, result: AcceptedAnalysisResult,
                        selection: list[ResultFilter] | None = None) -> None:
     validate_plot_arguments(plot)
     if plot.filters != (selection or []):
@@ -186,20 +186,20 @@ def accepted_result_plot_schema(
     *,
     frame: pd.DataFrame,
     title: str = "",
-) -> type[PlotSpec]:
+) -> type[PlottingPlan]:
     """Return contract and rendering errors to the existing SDK correction loop."""
     exact_selection = [item.model_copy(deep=True) for item in (selection or [])]
 
-    class AcceptedResultPlotSpec(PlotSpec):
+    class AcceptedResultPlottingPlan(PlottingPlan):
         @model_validator(mode="after")
         def accepted_result_contract(self):
             validate_plot_candidate(frame, self, result, exact_selection, title)
             return self
 
-    return AcceptedResultPlotSpec
+    return AcceptedResultPlottingPlan
 
 
-def validate_plot_candidate(frame: pd.DataFrame, plot: PlotSpec, result: AcceptedAnalysisResult,
+def validate_plot_candidate(frame: pd.DataFrame, plot: PlottingPlan, result: AcceptedAnalysisResult,
                             selection: list[ResultFilter], title: str):
     """Use the real renderer, retaining concise errors for model correction."""
     try:
@@ -234,7 +234,7 @@ def filter_frame(frame: pd.DataFrame, filters: list[ResultFilter]) -> pd.DataFra
     return frame
 
 
-def render_plot(frame: pd.DataFrame, plot: PlotSpec, title: str):
+def render_plot(frame: pd.DataFrame, plot: PlottingPlan, title: str):
     """Use only the executed DataFrame as Plotly's data source."""
     validate_plot_arguments(plot)
     frame = filter_frame(frame, plot.filters)

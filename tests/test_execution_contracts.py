@@ -8,14 +8,14 @@ from src.analysis import (
 from src.modelling_validation import (
     validate_built_models,
 )
-from src.core.contracts import AnalysisDimension, AnalysisMeasure, AnalysisPlan, AnalysisSpec, AnalyticalPlan, BusinessProcessPlan, DimensionPlan, FactDimensionLink, FactPlan, RatioComponents, SharedQualification, SourceMatchPath, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition
+from src.core.contracts import AnalysisDimension, AnalysisMeasure, AnalyticalPlan, AnalysisSpec, ConceptualPlan, BusinessProcessPlan, DimensionPlan, FactDimensionLink, FactPlan, RatioComponents, SharedQualification, SourceMatchPath, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition
 from src.modelling_validation import (
     plan_issues,
 )
 
-def source_plan() -> AnalyticalPlan:
+def source_plan() -> ConceptualPlan:
     """Use names that have no relationship to the recorded customer fixture."""
-    return AnalyticalPlan(assumptions=[], unresolved_questions=[], business_processes=[BusinessProcessPlan(name='observation', description='Specimens were observed')], dimensions=[DimensionPlan(name='dim_specimen', business_entity='Specimen', grain='one row per specimen', source_datasets=['registry'], natural_key_fields=['specimen id'], surrogate_key='specimen id', output_fields=[ModelOutput(name='specimen id', description='Registry identifier', definition=FieldDefinition(kind='copy', inputs=[FieldRef(kind='source', dataset='registry', column='Specimen Code')])), ModelOutput(name='field code', description='Field match code', definition=FieldDefinition(kind='copy', inputs=[FieldRef(kind='source', dataset='registry', column='Field Ref')])), ModelOutput(name='lab code', description='Lab match code', definition=FieldDefinition(kind='copy', inputs=[FieldRef(kind='source', dataset='registry', column='Lab Ref')]))], grain_key_fields=['specimen id'])], facts=[FactPlan(name='fact_observations', business_process='observation', fact_type='transaction', grain='one row per observation', source_datasets=['field_notes', 'lab_notes'], dimension_links=[FactDimensionLink(dimension_model='dim_specimen', source_paths=[SourceMatchPath(source_dataset='field_notes', steps=[MatchStep(pairs=[MatchPair(left=FieldRef(kind='source', column='Field Ref', dataset='field_notes'), right=FieldRef(kind='model', column='field code', model='dim_specimen'))])]), SourceMatchPath(source_dataset='lab_notes', steps=[MatchStep(pairs=[MatchPair(left=FieldRef(kind='source', column='Lab Ref', dataset='lab_notes'), right=FieldRef(kind='model', column='lab code', model='dim_specimen'))])])], unmatched_policy='null', key_pairs=[OutputKeyPair(fact_field='specimen link', dimension_field='specimen id')])], output_fields=[ModelOutput(name='observation id', description='Observation identity', definition=FieldDefinition(kind='generate', inputs=[], explanation='Generated from source observation identity')), ModelOutput(name='specimen link', description='Specimen reference', definition=FieldDefinition(kind='generate', inputs=[], explanation='Matched through declared source paths')), ModelOutput(name='observation count', description='One observation', additivity='additive', definition=FieldDefinition(kind='constant', inputs=[], explanation='constant 1', value=1))], grain_key_fields=['observation id'], modelling_rationale='Reusable recorded observations at the declared grain')])
+    return ConceptualPlan(assumptions=[], unresolved_questions=[], business_processes=[BusinessProcessPlan(name='observation', description='Specimens were observed')], dimensions=[DimensionPlan(name='dim_specimen', business_entity='Specimen', grain='one row per specimen', source_datasets=['registry'], natural_key_fields=['specimen id'], surrogate_key='specimen id', output_fields=[ModelOutput(name='specimen id', description='Registry identifier', definition=FieldDefinition(kind='copy', inputs=[FieldRef(kind='source', dataset='registry', column='Specimen Code')])), ModelOutput(name='field code', description='Field match code', definition=FieldDefinition(kind='copy', inputs=[FieldRef(kind='source', dataset='registry', column='Field Ref')])), ModelOutput(name='lab code', description='Lab match code', definition=FieldDefinition(kind='copy', inputs=[FieldRef(kind='source', dataset='registry', column='Lab Ref')]))], grain_key_fields=['specimen id'])], facts=[FactPlan(name='fact_observations', business_process='observation', fact_type='transaction', grain='one row per observation', source_datasets=['field_notes', 'lab_notes'], dimension_links=[FactDimensionLink(dimension_model='dim_specimen', source_paths=[SourceMatchPath(source_dataset='field_notes', steps=[MatchStep(pairs=[MatchPair(left=FieldRef(kind='source', column='Field Ref', dataset='field_notes'), right=FieldRef(kind='model', column='field code', model='dim_specimen'))])]), SourceMatchPath(source_dataset='lab_notes', steps=[MatchStep(pairs=[MatchPair(left=FieldRef(kind='source', column='Lab Ref', dataset='lab_notes'), right=FieldRef(kind='model', column='lab code', model='dim_specimen'))])])], unmatched_policy='null', key_pairs=[OutputKeyPair(fact_field='specimen link', dimension_field='specimen id')])], output_fields=[ModelOutput(name='observation id', description='Observation identity', definition=FieldDefinition(kind='generate', inputs=[], explanation='Generated from source observation identity')), ModelOutput(name='specimen link', description='Specimen reference', definition=FieldDefinition(kind='generate', inputs=[], explanation='Matched through declared source paths')), ModelOutput(name='observation count', description='One observation', additivity='additive', definition=FieldDefinition(kind='constant', inputs=[], explanation='constant 1', value=1))], grain_key_fields=['observation id'], modelling_rationale='Reusable recorded observations at the declared grain')])
 
 def profiles() -> dict:
     return {'registry': {'columns': [{'name': name} for name in ('Specimen Code', 'Field Ref', 'Lab Ref')]}, 'field_notes': {'columns': [{'name': 'Field Ref'}]}, 'lab_notes': {'columns': [{'name': 'Lab Ref'}]}}
@@ -52,11 +52,11 @@ def test_analysis_acceptance_rolls_back_all_results_and_retries_cleanly(tmp_path
     good = 'SELECT specimen, observed FROM main.fact_observations'
     bad = 'SELECT specimen, missing AS observed FROM main.fact_observations'
     with pytest.raises(AnalysisAcceptanceError, match='missing'):
-        accept_analyses(database, ['fact_observations'], AnalysisPlan(analyses=[analysis_spec(good), analysis_spec(bad)], qualifications=[], warnings=[]))
+        accept_analyses(database, ['fact_observations'], AnalyticalPlan(analyses=[analysis_spec(good), analysis_spec(bad)], qualifications=[], warnings=[]))
     with duckdb.connect(str(database), read_only=True) as con:
         tables = con.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'analysis'").fetchall()
     assert tables == []
-    accepted = accept_analyses(database, ['fact_observations'], AnalysisPlan(analyses=[analysis_spec(good)], qualifications=[], warnings=[]))
+    accepted = accept_analyses(database, ['fact_observations'], AnalyticalPlan(analyses=[analysis_spec(good)], qualifications=[], warnings=[]))
     assert accepted[0][1].row_count == 1
 
 def test_shared_qualification_variants_cannot_read_other_sources(tmp_path: Path):
@@ -68,11 +68,11 @@ def test_shared_qualification_variants_cannot_read_other_sources(tmp_path: Path)
     qualification = SharedQualification(qualification_id='observations', sql='SELECT specimen, observed FROM main.fact_observations', grain='one row per observation', population_definition='Observed specimens')
     spec = analysis_spec('SELECT specimen, observed FROM main.fact_observations')
     spec.query = QueryDefinition(kind='qualified', qualification_id='observations', sql='SELECT specimen, SUM(observed) AS observed FROM __modellm_population GROUP BY specimen')
-    accepted = accept_analyses(database, ['fact_observations'], AnalysisPlan(qualifications=[qualification], analyses=[spec], warnings=[]))
+    accepted = accept_analyses(database, ['fact_observations'], AnalyticalPlan(qualifications=[qualification], analyses=[spec], warnings=[]))
     assert accepted[0][1].row_count == 1
     spec.query.sql = 'SELECT p.specimen, s.observed FROM __modellm_population p JOIN raw.secret s ON true'
     with pytest.raises(AnalysisAcceptanceError, match='another table|shared population'):
-        accept_analyses(database, ['fact_observations'], AnalysisPlan(qualifications=[qualification], analyses=[spec], warnings=[]))
+        accept_analyses(database, ['fact_observations'], AnalyticalPlan(qualifications=[qualification], analyses=[spec], warnings=[]))
 
 def test_ratio_components_must_exist_in_accepted_result(tmp_path: Path):
     database = tmp_path / 'ratio.duckdb'
@@ -80,7 +80,7 @@ def test_ratio_components_must_exist_in_accepted_result(tmp_path: Path):
         con.execute("CREATE TABLE main.fact_observations AS SELECT 'fern' AS specimen, 2 AS observed")
     spec = analysis_spec('SELECT specimen, observed FROM main.fact_observations', components=RatioComponents(numerator_field='observed', denominator_field='possible'))
     with pytest.raises(AnalysisAcceptanceError, match='possible'):
-        accept_analyses(database, ['fact_observations'], AnalysisPlan(analyses=[spec], qualifications=[], warnings=[]))
+        accept_analyses(database, ['fact_observations'], AnalyticalPlan(analyses=[spec], qualifications=[], warnings=[]))
 
 def test_empty_results_preserve_current_result_schema(tmp_path: Path):
     database = tmp_path / 'empty.duckdb'
@@ -88,7 +88,7 @@ def test_empty_results_preserve_current_result_schema(tmp_path: Path):
         con.execute("CREATE TABLE main.fact_observations AS SELECT 'fern' AS specimen, 2 AS observed")
     spec = analysis_spec("SELECT specimen, observed FROM main.fact_observations WHERE specimen = 'moss'")
     # Current contracts accept empty results; plotting renders a figure without a new model call.
-    accepted = accept_analyses(database, ['fact_observations'], AnalysisPlan(analyses=[spec], qualifications=[], warnings=[]))
+    accepted = accept_analyses(database, ['fact_observations'], AnalyticalPlan(analyses=[spec], qualifications=[], warnings=[]))
     assert accepted[0][1].row_count == 0
     assert set(accepted[0][1].columns) == {'specimen', 'observed'}
 
@@ -100,7 +100,7 @@ def test_variant_expansion_is_checked_before_analysis_commit(tmp_path: Path):
                     "('fern', 2), ('moss', 3), ('fern', 4)) t(specimen, observed)")
     spec = analysis_spec('SELECT specimen, observed FROM main.fact_observations')
     spec.variant_field = 'observed'
-    plan = AnalysisPlan(analyses=[spec], qualifications=[], warnings=[])
+    plan = AnalyticalPlan(analyses=[spec], qualifications=[], warnings=[])
     with pytest.raises(AnalysisAcceptanceError, match='3 figures.*limit of 2'):
         accept_analyses(database, ['fact_observations'], plan, max_charts=2)
     with duckdb.connect(str(database), read_only=True) as con:

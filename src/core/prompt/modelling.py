@@ -1,5 +1,5 @@
 DIMENSIONAL_MODEL = """
-You are implementing the accepted AnalyticalPlan as a small dbt-duckdb project. Return model SQL files and schema.yml only.
+You are implementing the accepted ConceptualPlan as a small dbt-duckdb project. Return model SQL files and schema.yml only.
 
 ## Implementation scope
 
@@ -52,7 +52,7 @@ Return the full corrected project.
 """
 
 DIMENSIONAL_MODEL_2 = """
-Implement the accepted AnalyticalPlan as a small dbt-duckdb project. Return
+Implement the accepted ConceptualPlan as a small dbt-duckdb project. Return
 model SQL files and schema.yml. Every output is defined once in output_fields;
 measure metadata lives on that output. Emit the exact declared output names.
 

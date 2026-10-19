@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from src import agents
 from src.agent_runtime import InvocationLimitError
 from src.config import ReleaseSettings, use_settings
-from src.core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlotSpec, QueryDefinition
+from src.core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlottingPlan, QueryDefinition
 from src.run import RunRecord
 from src.workflow import _render_visualisations
 from src.workspace import RunWorkspace
@@ -48,8 +48,8 @@ def test_failed_chart_is_skipped_between_successful_charts(plot_case, monkeypatc
         if spec.title == 'Readings 1':
             if failure == 'limit':
                 raise InvocationLimitError('four plotting turns exhausted')
-            return PlotSpec(function='unsupported', columns={}, filters=[], options={})
-        return PlotSpec(function='scatter', columns={'x': 'position', 'y': 'reading'}, filters=[], options={})
+            return PlottingPlan(function='unsupported', columns={}, filters=[], options={})
+        return PlottingPlan(function='scatter', columns={'x': 'position', 'y': 'reading'}, filters=[], options={})
 
     monkeypatch.setattr(agents, 'plot', plot)
     with use_settings(ReleaseSettings(max_charts=2)):
@@ -75,7 +75,7 @@ def test_global_and_transport_errors_are_not_skipped(plot_case, monkeypatch, err
 
 
 def test_artifact_write_failure_is_not_skipped(plot_case, monkeypatch):
-    monkeypatch.setattr(agents, 'plot', lambda *a, **kw: PlotSpec(function='scatter',
+    monkeypatch.setattr(agents, 'plot', lambda *a, **kw: PlottingPlan(function='scatter',
         columns={'x': 'position', 'y': 'reading'}, filters=[], options={}))
     def fail(*args, **kwargs):
         raise OSError('Artifact storage unavailable')

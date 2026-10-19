@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from .core.contracts import DbtImplementation
+from .core.contracts import DimensionalPlan
 from .data import identifier
 from .config import current_settings
 from .database import connection_options
@@ -18,7 +18,7 @@ def write_project(
     project: Path,
     database: Path,
     source_names: list[str],
-    implementation: DbtImplementation,
+    implementation: DimensionalPlan,
 ) -> None:
     validate_dbt_files(implementation, source_names)
     models = project / "models"

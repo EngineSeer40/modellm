@@ -12,7 +12,7 @@ import pytest
 from strands import Agent
 
 from src.config import DEFAULT_MODEL, ReleaseSettings, use_settings
-from src.core.contracts import DbtFile, DbtImplementation, PlotSpec
+from src.core.contracts import DbtFile, DimensionalPlan, PlottingPlan
 from src.database import connect
 from src.dbt import run_dbt, write_project
 from src.execution import RunBudget, RunManager
@@ -29,7 +29,7 @@ def settings(tmp_path, **kwargs):
 
 
 def implementation(sql="SELECT * FROM {{ source('raw', 'accounts') }}", schema=None):
-    return DbtImplementation(explanation="fixture", files=[
+    return DimensionalPlan(explanation="fixture", files=[
         DbtFile(path="dim_account.sql", content=sql),
         DbtFile(path="schema.yml", content=schema or "version: 2\nmodels:\n  - name: dim_account\n    columns:\n      - name: id\n        data_tests: [unique, not_null]\n"),
     ])
@@ -142,12 +142,12 @@ def test_restricted_dbt_build_and_environment(tmp_path, monkeypatch):
 
 def test_sdk_internal_cycles_share_one_budget():
     # An invalid structured tool response normally causes another SDK model call.
-    model = LocalModel([("PlotSpec", {"function":"bar", "columns":{}, "filters":[], "options":{"template":"missing"}}),
-                        ("PlotSpec", {"function":"bar", "columns":{}, "filters":[], "options":{}})])
+    model = LocalModel([("PlottingPlan", {"function":"bar", "columns":{}, "filters":[], "options":{"template":"missing"}}),
+                        ("PlottingPlan", {"function":"bar", "columns":{}, "filters":[], "options":{}})])
     budget = RunBudget(ReleaseSettings(max_model_calls=1))
     agent = Agent(model=model, callback_handler=None, hooks=[budget.hooks(DEFAULT_MODEL, "ap-southeast-2")])
     async def consume():
-        async for _ in agent.stream_async("plot", structured_output_model=PlotSpec):
+        async for _ in agent.stream_async("plot", structured_output_model=PlottingPlan):
             pass
     with pytest.raises(Exception, match="Internal model calls"):
         asyncio.run(consume())
@@ -222,7 +222,7 @@ def test_ingest_rejects_source_shape_before_profiling(tmp_path):
     for path in files:
         path.write_text("id,value\n1,10\n2,20\n3,30\n")
     with use_settings(settings(tmp_path, max_source_rows=1)):
-        with pytest.raises(ValueError, match="Source rows"):
+        with pytest.raises(ValueError, match=r"Rows in accounts.csv exceeds the configured limit \(1\)"):
             load_raw(tmp_path / "limited.duckdb", files)
     with connect(tmp_path / "limited.duckdb", read_only=True) as con:
         assert con.execute("SELECT count(*) FROM raw.accounts").fetchone()[0] == 2

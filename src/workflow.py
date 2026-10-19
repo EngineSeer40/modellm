@@ -23,7 +23,7 @@ from .visualisation import (
 from .agent_runtime import InvocationLimitError
 from .modelling_validation import plan_issues, validate_built_models
 from .core.contracts import (
-    CONTRACT_VERSION, AcceptedAnalysisResult, AnalysisPlan, AnalysisSpec, AnalyticalPlan, DbtImplementation,
+    CONTRACT_VERSION, AcceptedAnalysisResult, AnalyticalPlan, AnalysisSpec, ConceptualPlan, DimensionalPlan,
 )
 from .context_cost import configured_cost_experiments
 from .data import load_raw, profile, relationships, schemas
@@ -132,7 +132,7 @@ def _run(paths: list[Path], request: str, workspace: RunWorkspace, *, on_event: 
     return state
 
 
-def _save_dbt_attempt(record: RunRecord, number: int, implementation: DbtImplementation) -> None:
+def _save_dbt_attempt(record: RunRecord, number: int, implementation: DimensionalPlan) -> None:
     state, emit, run_dir = record.state, record.emit, record.workspace.run_dir
     attempts_dir = run_dir / "attempts"
     attempts_dir.mkdir(exist_ok=True)
@@ -197,7 +197,7 @@ def _prepare_sources(record: RunRecord, paths: list[Path]) -> tuple[list[str], d
 
 
 def _build_conceptual_model(record: RunRecord, request: str, names: list[str],
-                            profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> AnalyticalPlan:
+                            profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> ConceptualPlan:
     state, emit = record.state, record.emit
     emit(
         "conceptual modelling",
@@ -231,7 +231,7 @@ def _build_conceptual_model(record: RunRecord, request: str, names: list[str],
                 {"issues": attempt["issues"], "revision": revision + 1},
             )
     if issues:
-        raise ValueError(f"AnalyticalPlan validation failed: {'; '.join(map(str, issues))}")
+        raise ValueError(f"ConceptualPlan validation failed: {'; '.join(map(str, issues))}")
     emit(
         "conceptual modelling",
         "contract_check",
@@ -245,7 +245,7 @@ def _build_conceptual_model(record: RunRecord, request: str, names: list[str],
     return plan
 
 
-def _build_models(record: RunRecord, names: list[str], plan: AnalyticalPlan,
+def _build_models(record: RunRecord, names: list[str], plan: ConceptualPlan,
                   profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> list[str]:
     state, emit = record.state, record.emit
     database = record.workspace.database
@@ -373,8 +373,8 @@ def _build_models(record: RunRecord, names: list[str], plan: AnalyticalPlan,
     return model_names
 
 
-def _accept_analysis(record: RunRecord, request: str, plan: AnalyticalPlan,
-                     model_names: list[str], cost_experiments: frozenset[str]) -> tuple[AnalysisPlan, AcceptedResults]:
+def _accept_analysis(record: RunRecord, request: str, plan: ConceptualPlan,
+                     model_names: list[str], cost_experiments: frozenset[str]) -> tuple[AnalyticalPlan, AcceptedResults]:
     state, emit = record.state, record.emit
     database = record.workspace.database
     settings = current_settings()

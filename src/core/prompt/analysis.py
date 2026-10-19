@@ -152,10 +152,10 @@ Apply the supplied presentation_selection exactly; the application schedules
 each representation and groups related charts.
 
 Respect chart preferences in the original user request where the renderer supports them.
-Return PlotSpec with a Plotly Express function and supported column mappings.
+Return PlottingPlan with a Plotly Express function and supported column mappings.
 Use available_plots and the accepted result to choose a function. The Analysis
 goal expresses intent, not proof that a function can fulfil it; choose an honest
-view when the requested form is unavailable. PlotSpec checks arguments and
+view when the requested form is unavailable. PlottingPlan checks arguments and
 field names and returns errors for correction. columns contains field names;
 options contains scalar settings such as orientation or barmode.
 renderer_templates lists the registered names allowed for options.template. Choose one listed name or omit template; do not invent style names.

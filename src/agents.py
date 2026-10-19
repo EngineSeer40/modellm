@@ -14,12 +14,12 @@ from src.tools.result_tools import DuckDBResultTools
 from .core.contracts import (
     AcceptedAnalysisResult,
     AnalysisFinding,
-    AnalysisPlan,
-    AnalysisSpec,
     AnalyticalPlan,
-    DbtImplementation,
+    AnalysisSpec,
+    ConceptualPlan,
+    DimensionalPlan,
     EarlyValidatedAnalysisFinding,
-    PlotSpec,
+    PlottingPlan,
     ResultFilter,
     ValidationIssue,
     registered_plot_templates,
@@ -39,11 +39,11 @@ def conceptual(
     relationships: list[dict],
     emit: Callable,
     feedback: list[ValidationIssue] | None = None,
-    previous: AnalyticalPlan | None = None,
+    previous: ConceptualPlan | None = None,
     *,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
-) -> AnalyticalPlan:
+) -> ConceptualPlan:
     experiments = configured_cost_experiments(cost_experiments)
     stable = {
         "request": request,
@@ -58,22 +58,22 @@ def conceptual(
               else json.dumps({**stable, **repair}, default=str))
     system_prompt = CONCEPTUAL_MODEL + (CONCEPTUAL_REFERENCE_GUIDANCE if "conceptual_guidance" in experiments else "")
     return invoke(
-        prompt, AnalyticalPlan, "conceptual modelling", emit, system_prompt, cost_experiments=experiments,
+        prompt, ConceptualPlan, "conceptual modelling", emit, system_prompt, cost_experiments=experiments,
         trace_attributes=trace_attributes,
     )
 
 
 def implement(
-    plan: AnalyticalPlan,
+    plan: ConceptualPlan,
     profiles: dict,
     relationships: list[dict],
     emit: Callable,
     failure: str = "",
-    previous: DbtImplementation | None = None,
+    previous: DimensionalPlan | None = None,
     *,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
-) -> DbtImplementation:
+) -> DimensionalPlan:
     prompt = split_stable_and_repair_context(
         {
             "plan": plan.model_dump(), "profiles": profiles, "relationships": relationships,
@@ -84,7 +84,7 @@ def implement(
         },
     )
     return invoke(
-        prompt, DbtImplementation, "generating dbt models", emit, DIMENSIONAL_MODEL,
+        prompt, DimensionalPlan, "generating dbt models", emit, DIMENSIONAL_MODEL,
         cost_experiments=cost_experiments,
         trace_attributes=trace_attributes,
     )
@@ -92,17 +92,17 @@ def implement(
 
 def analyse(
     request: str,
-    plan: AnalyticalPlan,
+    plan: ConceptualPlan,
     model_schemas: dict,
     summaries: dict,
     emit: Callable,
     database: Path,
     feedback: str = "",
-    previous: AnalysisPlan | None = None,
+    previous: AnalyticalPlan | None = None,
     *,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
-) -> AnalysisPlan:
+) -> AnalyticalPlan:
     experiments = configured_cost_experiments(cost_experiments)
     db = DuckDBAnalysisTools(database, list(model_schemas))
     small_previews = "small_analysis_previews" in experiments
@@ -111,7 +111,7 @@ def analyse(
     prompt = split_stable_and_repair_context(
         {
             "request": request,
-            "analytical_plan": plan.model_dump(),
+            "conceptual_plan": plan.model_dump(),
             "validated_schemas": model_schemas,
             "model_summaries": summaries,
             "available_plots": plot_descriptions(),
@@ -127,7 +127,7 @@ def analyse(
     )
     result = invoke(
         prompt,
-        AnalysisPlan,
+        AnalyticalPlan,
         "analytical interpretation",
         emit,
         ANALYSIS + (ANALYSIS_PREVIEW_GUIDANCE if small_previews else ""),
@@ -202,7 +202,7 @@ def plot(
     title: str | None = None,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
-) -> PlotSpec:
+) -> PlottingPlan:
 
     db = DuckDBResultTools(
         database=database,

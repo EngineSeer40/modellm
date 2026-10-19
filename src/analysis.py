@@ -11,7 +11,7 @@ from sqlglot import exp
 
 from .core.contracts import (
     AcceptedAnalysisResult,
-    AnalysisPlan,
+    AnalyticalPlan,
     AnalysisSpec,
 )
 from .data import identifier
@@ -26,7 +26,7 @@ class AnalysisAcceptanceError(RuntimeError):
         super().__init__(f"Analysis {index} ({title}) failed: {error}")
 
 
-def analysis_statement(spec: AnalysisSpec, plan: AnalysisPlan, model_names: list[str]) -> str:
+def analysis_statement(spec: AnalysisSpec, plan: AnalyticalPlan, model_names: list[str]) -> str:
     """Return the exact final SQL to execute, including an optional shared qualification."""
     if spec.query.kind == "direct":
         return validate_analysis_sql(spec.query.sql, model_names)
@@ -45,7 +45,7 @@ def analysis_statement(spec: AnalysisSpec, plan: AnalysisPlan, model_names: list
 def accept_analyses(
     database: Path,
     model_names: list[str],
-    analysis: AnalysisPlan,
+    analysis: AnalyticalPlan,
     *,
     max_charts: int | None = None,
 ) -> list[tuple[AnalysisSpec, AcceptedAnalysisResult]]:

@@ -1,0 +1,6 @@
+/fixtures/
+/outputs/
+/scenarios/
+/plotting/
+__pycache__/
+.pytest_cache/

@@ -25,6 +25,7 @@ def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, mo
         "analysis": {"analyses": [{"title": "Customer count", "concept_id": "count"}]},
         "charts": [{"title": "Customer count", "file": "chart_0.json", "result_index": 0}],
         "findings": [{"text": "There are two customers", "evidence": []}],
+        "quality_warnings": ["Unresolved source issue"],
     }
     if trace_url:
         state["langfuse_trace_url"] = trace_url
@@ -41,14 +42,15 @@ def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, mo
     root = Path(__file__).resolve().parents[1]
     app = AppTest.from_file(root / "app.py").run(timeout=20)
     assert not app.exception
+    assert not app.tabs[1].warning
     assert app.session_state["ui_surface"] == "Results"
     assert len(app.get("plotly_chart")) == 1
     assert not app.get("file_uploader")
     assert not any(button.label == "Start Modelling" for button in app.button)
     assert not any("expired" in message.value for message in app.info)
     assert [tab.label for tab in app.tabs] == ["Run", "Results", "Data Model", "Technical Details"]
-    links = [item.value for item in app.markdown if "View Langfuse Observability Trace" in item.value]
-    assert links == ([f"[View Langfuse Observability Trace ↗]({trace_url})"] if trace_url else [])
+    links = [item.value for item in app.header if "Langfuse Full Trace" in item.value]
+    assert links == ([f"[Langfuse Full Trace]({trace_url})"] if trace_url else [])
     app.run(timeout=20)
     assert not app.exception and len(app.get("plotly_chart")) == 1
     # Relocating a run must not change its recorded original result on disk.
