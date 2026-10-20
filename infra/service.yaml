@@ -12,7 +12,7 @@ Parameters:
   SecretKmsKeyArn: {Type: String, Default: ''}
   LangfuseSecretArn: {Type: String, Default: ''}
   LangfuseBaseUrl: {Type: String, Default: 'https://cloud.langfuse.com'}
-  LangfusePublic: {Type: String, Default: 'false', AllowedValues: ['true', 'false']}
+  LangfusePublic: {Type: String, Default: 'true', AllowedValues: ['true', 'false']}
   ModelId: {Type: String, Default: 'au.anthropic.claude-sonnet-4-6'}
   PlottingModelId: {Type: String, Default: 'au.anthropic.claude-haiku-4-5-20251001-v1:0'}
   BedrockResourceArns:

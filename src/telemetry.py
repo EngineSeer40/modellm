@@ -41,7 +41,7 @@ def configure_langfuse() -> None:
     try:
         if not boolean("MODELLM_LANGFUSE_ENABLED", False):
             return
-        public = boolean("MODELLM_LANGFUSE_PUBLIC", False)
+        public = boolean("MODELLM_LANGFUSE_PUBLIC", True)
         if not all(os.environ.get(name, "").strip() for name in (
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL",
         )):
@@ -57,7 +57,7 @@ def configure_langfuse() -> None:
 
 
 def current_langfuse_trace_url() -> str | None:
-    """Link the existing workflow trace; publishing is an explicit operator choice."""
+    """Link the existing workflow trace, publishing it by default for UI sharing."""
     span = trace.get_current_span()
     context = span.get_span_context()
     if _langfuse_client is None or not span.is_recording() or not context.is_valid:

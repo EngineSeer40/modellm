@@ -48,29 +48,23 @@ def _short(value, limit=240):
 
 
 def _query_description(sql):
-    """Describe represented SQL operations, without guessing a business intent."""
+    """Summarise query activity without displaying SQL expressions."""
     try:
         query = sqlglot.parse_one(sql, read="duckdb")
         if query is None:
-            return "Query submitted; SQL details are in Technical Details"
+            return "Inspecting analytical data"
         tables = list(dict.fromkeys(table.name for table in query.find_all(exp.Table)))
-        parts = ["Querying " + ", ".join(tables)] if tables else ["Evaluating query"]
-        outputs = query.expressions if isinstance(query, exp.Select) else []
-        calculations = [item.sql(dialect="duckdb") for item in outputs
-                        if any(item.find_all(exp.AggFunc))]
-        if calculations:
-            parts.append("calculations: " + _short("; ".join(calculations)))
-        elif outputs:
-            parts.append("fields: " + _short(", ".join(item.alias_or_name or item.sql(dialect="duckdb") for item in outputs)))
-        for key, label in (("where", "filter"), ("group", "grouped by"), ("having", "group filter"),
-                           ("order", "ordered by"), ("limit", "SQL row limit")):
-            clause = query.args.get(key)
-            if clause is not None:
-                values = clause.expressions or ([clause.this] if clause.this is not None else [])
-                parts.append(label + ": " + _short(", ".join(item.sql(dialect="duckdb") for item in values)))
+        parts = ["Inspecting " + _short(", ".join(tables))] if tables else ["Inspecting analytical data"]
+        for expression, description in ((exp.Join, "combining related data"),
+                                        (exp.Where, "selecting relevant rows"),
+                                        (exp.AggFunc, "calculating summary values"),
+                                        (exp.Group, "comparing groups"),
+                                        (exp.Order, "ordering results")):
+            if query.find(expression) is not None:
+                parts.append(description)
         return " · ".join(parts)
     except (sqlglot.errors.ParseError, ValueError, TypeError):
-        return "Query submitted; SQL details are in Technical Details"
+        return "Inspecting analytical data"
 
 
 def _tool_description(name, payload):
@@ -102,10 +96,8 @@ def _tool_result(result):
 
 def _result_description(result):
     data = _tool_result(result)
-    if result.get("status") == "error":
-        content = "; ".join(_short(block.get("text", block.get("json", "")))
-                            for block in result.get("content", []))
-        return "Inspection failed: " + content
+    if result.get("status") == "error" or (data and data.get("error")):
+        return "Inspection could not complete; details are in Technical Details"
     if not data:
         return "Inspection completed; result details are in Technical Details"
     if "row_count" in data:
@@ -199,7 +191,14 @@ def stream_text(events):
                 continue
             append(event, _validation_summary(event, retrying=kind == "repair"))
         elif kind in {"start", "done", "repair", "failure", "model_failure", "contract_check"}:
-            message = str(event.get("message", ""))
+            if kind == "model_failure":
+                message = "Agent call could not complete; details are in Technical Details"
+            elif kind == "failure":
+                message = "Stage checks could not complete; details are in Technical Details"
+            elif kind == "repair":
+                message = "Requesting an automatic correction"
+            else:
+                message = str(event.get("message", ""))
             if message and not message.lstrip().startswith(("{", "[")):
                 append(event, message)
     return "\n\n".join(entries)
@@ -308,10 +307,12 @@ def render_timeline(state: RunState | RunProgress):
             continue
         label = "Running" if phase["status"] in {"repairing", "checking"} else phase["status"].capitalize()
         title = "Building data models" if index == 3 else phase["label"]
-        # A stable key preserves browser open/closed state while the label changes.
-        # Keep the initial expanded value constant across polling updates too.
-        with st.expander(f"{title} · {label}", expanded=False,
-                         key=f"stage_{state.get('run_id', 'draft')}_{index}"):
+        # Mount a new, open expander once this phase first has activity. Keep its
+        # key and initial expanded value unchanged afterward so polling and
+        # completion preserve the user's browser-side open/closed choice.
+        started = bool(phase_events)
+        with st.expander(f"{title} · {label}", expanded=started,
+                         key=f"stage_{state.get('run_id', 'draft')}_{index}_{'started' if started else 'pending'}"):
             st.write("Building the declared facts and dimensions." if index == 3 else phase["detail"])
             if phase["status"] == "pending":
                 st.caption("Waiting for earlier stages to finish.")
