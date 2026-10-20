@@ -5,17 +5,23 @@ from pathlib import Path
 import pandas as pd
 from opentelemetry.util.types import AttributeValue
 
-from src.core.prompt import ANALYSIS, ANALYSIS_FINDING, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
+from src.core.prompt import ANALYSIS, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
 from src.core.prompt.analysis import ANALYSIS_PREVIEW_GUIDANCE
 from src.core.prompt.conceptual import CONCEPTUAL_REFERENCE_GUIDANCE
 from src.tools.analysis_tools import DuckDBAnalysisTools
 from src.tools.result_tools import DuckDBResultTools
 
+from .agent_runtime import invoke
+from .config import current_settings
+from .context_cost import (
+    configured_cost_experiments,
+    split_stable_and_repair_context,
+)
 from .core.contracts import (
     AcceptedAnalysisResult,
     AnalysisFinding,
-    AnalyticalPlan,
     AnalysisSpec,
+    AnalyticalPlan,
     ConceptualPlan,
     DimensionalPlan,
     EarlyValidatedAnalysisFinding,
@@ -24,12 +30,10 @@ from .core.contracts import (
     ValidationIssue,
     registered_plot_templates,
 )
-from .config import current_settings
-from .visualisation import accepted_result_plot_schema, plot_capabilities, plot_descriptions
-from .agent_runtime import invoke
-from .context_cost import (
-    configured_cost_experiments,
-    split_stable_and_repair_context,
+from .visualisation import (
+    accepted_result_plot_schema,
+    plot_capabilities,
+    plot_descriptions,
 )
 
 
@@ -54,11 +58,21 @@ def conceptual(
         "previous_plan_issues": [issue.model_dump() for issue in (feedback or [])],
         "previous_plan": previous.model_dump() if previous else None,
     }
-    prompt = (split_stable_and_repair_context(stable, repair) if "conceptual_cache" in experiments
-              else json.dumps({**stable, **repair}, default=str))
-    system_prompt = CONCEPTUAL_MODEL + (CONCEPTUAL_REFERENCE_GUIDANCE if "conceptual_guidance" in experiments else "")
+    prompt = (
+        split_stable_and_repair_context(stable, repair)
+        if "conceptual_cache" in experiments
+        else json.dumps({**stable, **repair}, default=str)
+    )
+    system_prompt = CONCEPTUAL_MODEL + (
+        CONCEPTUAL_REFERENCE_GUIDANCE if "conceptual_guidance" in experiments else ""
+    )
     return invoke(
-        prompt, ConceptualPlan, "conceptual modelling", emit, system_prompt, cost_experiments=experiments,
+        prompt,
+        ConceptualPlan,
+        "conceptual modelling",
+        emit,
+        system_prompt,
+        cost_experiments=experiments,
         trace_attributes=trace_attributes,
     )
 
@@ -76,7 +90,9 @@ def implement(
 ) -> DimensionalPlan:
     prompt = split_stable_and_repair_context(
         {
-            "plan": plan.model_dump(), "profiles": profiles, "relationships": relationships,
+            "plan": plan.model_dump(),
+            "profiles": profiles,
+            "relationships": relationships,
         },
         {
             "previous_failure": failure,
@@ -84,7 +100,11 @@ def implement(
         },
     )
     return invoke(
-        prompt, DimensionalPlan, "generating dbt models", emit, DIMENSIONAL_MODEL,
+        prompt,
+        DimensionalPlan,
+        "generating dbt models",
+        emit,
+        DIMENSIONAL_MODEL,
         cost_experiments=cost_experiments,
         trace_attributes=trace_attributes,
     )
@@ -136,7 +156,8 @@ def analyse(
             db.describe_model,
             db.query_data_small_preview if small_previews else db.query_data,
         ],
-        cost_experiments=experiments, context_directory=database.parent / "context",
+        cost_experiments=experiments,
+        context_directory=database.parent / "context",
         trace_attributes=trace_attributes,
     )
 
@@ -180,12 +201,15 @@ def interpret(
     )
     return invoke(
         prompt,
-        EarlyValidatedAnalysisFinding if "early_finding_validation" in experiments else AnalysisFinding,
+        EarlyValidatedAnalysisFinding
+        if "early_finding_validation" in experiments
+        else AnalysisFinding,
         "analytical finding",
         emit,
-        ANALYSIS_FINDING,
+        ANALYSIS,
         tools=[db.inspect_result],
-        cost_experiments=experiments, context_directory=db.database.parent / "context",
+        cost_experiments=experiments,
+        context_directory=db.database.parent / "context",
         trace_attributes=trace_attributes,
     )
 
@@ -240,7 +264,9 @@ def plot(
 
     return invoke(
         prompt,
-        accepted_result_plot_schema(result, selection, frame=frame, title=title or spec.title),
+        accepted_result_plot_schema(
+            result, selection, frame=frame, title=title or spec.title
+        ),
         "visualisation generation",
         emit,
         PLOTTING,
