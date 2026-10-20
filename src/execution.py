@@ -22,6 +22,10 @@ from .usage import estimate_usage_cost, summarize_usage
 from .workspace import RunWorkspace, atomic_json, validate_submission
 
 
+class RunBudgetExceededError(RuntimeError):
+    """Further model calls are prohibited by the shared run budget."""
+
+
 class RunBudget:
     """One budget across stages, repairs and SDK model cycles; no prompt editing."""
     def __init__(self, settings):
@@ -35,17 +39,20 @@ class RunBudget:
         limit = self.settings.run_seconds
         remaining = limit - (time.monotonic() - self.started) if limit else None
         if remaining is not None and remaining <= 0:
-            raise RuntimeError("Workflow deadline exceeded")
+            raise RunBudgetExceededError("Workflow deadline exceeded")
         return remaining
 
     def before_model(self):
         self.remaining_seconds()
-        check_limit(self.calls + 1, self.settings.max_model_calls, "Internal model calls")
+        try:
+            check_limit(self.calls + 1, self.settings.max_model_calls, "Internal model calls")
+        except ValueError as exc:
+            raise RunBudgetExceededError(str(exc)) from exc
         if self.settings.max_cost_usd is not None:
             if self.usage_unknown:
-                raise RuntimeError("Cannot continue: provider usage or pricing unavailable")
+                raise RunBudgetExceededError("Cannot continue: provider usage or pricing unavailable")
             if self.cost >= self.settings.max_cost_usd:
-                raise RuntimeError("Reported model cost budget exhausted")
+                raise RunBudgetExceededError("Reported model cost budget exhausted")
         self.calls += 1
 
     def record_response(self, message, model, region):

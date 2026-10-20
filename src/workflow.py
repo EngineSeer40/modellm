@@ -17,10 +17,7 @@ from . import agents
 from .analysis import (
     AnalysisAcceptanceError, analysis_statement, accept_analyses, load_result_frame, result_metrics, summarize_models,
 )
-from .visualisation import (
-    PlotValidationError, validate_plot_candidate, representation_selections,
-)
-from .agent_runtime import InvocationLimitError
+from .visualisation import validate_plot_candidate, representation_selections
 from .modelling_validation import plan_issues, validate_built_models
 from .core.contracts import (
     CONTRACT_VERSION, AcceptedAnalysisResult, AnalyticalPlan, AnalysisSpec, ConceptualPlan, DimensionalPlan,
@@ -30,7 +27,7 @@ from .data import load_raw, profile, relationships, schemas
 from .dbt import dbt_results, run_dbt, write_project
 from .experiments import provenance, record_run
 from .config import ReleaseSettings, current_settings, use_settings, check_limit
-from .execution import current_budget, use_budget
+from .execution import RunBudgetExceededError, current_budget, use_budget
 from .storage import cleanup_run_workspaces
 from .workspace import RunWorkspace, validate_submission
 from .tools.result_tools import DuckDBResultTools, EvidenceRegistry, render_finding
@@ -593,7 +590,7 @@ def _render_visualisations(record: RunRecord, accepted_results: AcceptedResults,
                                        frame=frame, title=title,
                                        cost_experiments=cost_experiments, trace_attributes=trace_attributes)
                     fig = validate_plot_candidate(frame, plot, accepted_result, selection, title)
-                except (InvocationLimitError, PlotValidationError) as exc:
+                except Exception as exc:
                     state["plot_attempts"].append(
                         {"title": title, "status": "skipped", "result_index": index,
                          "concept_id": spec.concept_id, "relation": accepted_result.relation,
@@ -605,6 +602,9 @@ def _render_visualisations(record: RunRecord, accepted_results: AcceptedResults,
                          {"relation": accepted_result.relation,
                           "presentation_selection": [f.model_dump() for f in selection],
                           "plot": plot.model_dump() if plot is not None else None})
+                    if isinstance(exc, RunBudgetExceededError):
+                        emit("visualisation generation", "done", f"Rendered {len(state['charts'])} figures")
+                        return
                     continue
                 filename = f"chart_{index}_{variant_index}.json"
                 fig.write_json(run_dir / filename)

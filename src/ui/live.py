@@ -165,6 +165,8 @@ def stream_text(events):
     for index, event in enumerate(events):
         kind, stage = event.get("kind", ""), event.get("stage", "")
         detail = event.get("detail", {})
+        if stage == "visualisation generation" and kind in {"failure", "model_failure"}:
+            continue
         if kind == "model_message":
             message = detail.get("message", {})
             if not isinstance(message, dict):

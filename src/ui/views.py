@@ -95,6 +95,11 @@ def render_results(state: RunState | None):
     for concept in concepts:
         related = [(index, item) for index, item in enumerate(analyses)
                    if item.get("concept_id", item["title"]) == concept]
+        related = [(index, item) for index, item in related
+                   if any(chart["result_index"] == index for chart in state.get("charts", []))
+                   or "plot_attempts" not in state]
+        if not related:
+            continue
         st.divider()
         st.subheader(related[0][1]["title"])
         for index, analysis in related:
