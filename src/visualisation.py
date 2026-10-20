@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from pydantic import model_validator
 
 from .core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlottingPlan, ResultFilter, validate_plot_template
@@ -60,6 +61,9 @@ PLOTLY_PRESENTATION_ARGUMENTS = {
     "log_x", "log_y", "width", "height", "template", "text_auto",
 }
 
+GRID_PLOTS = {"heatmap": go.Heatmap, "contour": go.Contour}
+GRID_OPTIONS = {"width", "height", "template", "opacity", "colorscale", "showscale", "reversescale"}
+
 
 class PlotValidationError(ValueError):
     """An encoding can be corrected without changing the accepted data."""
@@ -79,19 +83,23 @@ def plot_capabilities() -> dict:
             "columns": sorted(PLOTLY_COLUMN_ARGUMENTS & parameters.keys()) if name != "imshow" else [],
             "options": sorted(PLOTLY_PRESENTATION_ARGUMENTS & parameters.keys()),
         }
+    for name in GRID_PLOTS:
+        capabilities[name] = {"columns": ["x", "y", "z"], "options": sorted(GRID_OPTIONS)}
     return capabilities
 
 
 def plot_descriptions() -> dict[str, str]:
     """Selection guidance for Analysis, limited to the installed renderer's functions."""
     descriptions = {
+        "heatmap": "Show already-calculated values in a two-dimensional cell matrix. Map x/y cell coordinates and z cell values; exactly one accepted row per x/y cell. The renderer only reshapes these fields: no aggregation, normalisation, interpolation or gap filling. Categorical axes are supported. Other result columns may retain counts or context without being part of the matrix.",
+        "contour": "Draw iso-value contours of an already-calculated surface. Map numeric x/y grid coordinates and numeric z surface values; exactly one accepted row per x/y grid node. A contour needs adjacent complete grid cells. The renderer only reshapes these values: no binning, interpolation of scattered observations, aggregation or gap filling. Analysis must construct any required surface in its SQL and declare its method, grid resolution and extent. This is distinct from density_contour, which bins observations.",
         "area": "Show cumulative magnitude and changing composition over an ordered dimension; expects ordered positions, values and optional series.",
         "bar": "Compare category magnitudes or rankings; expects categories and numeric values, optionally grouped or stacked.",
         "bar_polar": "Compare magnitudes around directions or cyclic categories; expects angular positions and radial values.",
         "box": "Compare medians, spread and outliers between groups; expects individual numeric observations and optional categories.",
         "choropleth": "Compare values across geographic regions on a projected map; expects recognised region identifiers and numeric values.",
         "choropleth_map": "Compare regions on a tile map; requires matching boundary geometry, which this renderer cannot currently supply.",
-        "density_contour": "Show contours of binned observations across numeric x/y dimensions; z is aggregated within bins, and color separates groups rather than setting contour levels. Does not interpolate an irregular measured surface.",
+        "density_contour": "Contour observation counts in x/y bins with this renderer's defaults. Color separates groups rather than defining contour levels. Supplying z does not make these iso-value contours of that measurement; this renderer does not expose a different histfunc for this function. It cannot construct an irregular measured surface.",
         "density_heatmap": "Reveal hotspots and bands by binning observations across two dimensions; z is aggregated within bins, not interpolated into a measurement grid.",
         "density_map": "Reveal geographic concentrations or weighted hotspots; expects latitude/longitude in degrees and an optional intensity measure.",
         "ecdf": "Compare percentiles and distribution tails; turns numeric observations into cumulative proportions, optionally grouped.",
@@ -131,14 +139,17 @@ def plot_descriptions() -> dict[str, str]:
 def validate_plot_arguments(plot: PlottingPlan) -> None:
     supported = plot_capabilities().get(plot.function)
     if supported is None:
-        raise ValueError(f"Unsupported Plotly Express function: {plot.function}")
+        raise ValueError(f"Unsupported Plotly function: {plot.function}")
+    errors = []
     for argument in plot.columns:
         if argument not in supported["columns"]:
             hint = "; place presentation settings in options" if argument in supported["options"] else ""
-            raise ValueError(f"Unsupported plot column argument for {plot.function}: {argument}{hint}")
-    for argument in plot.options:
-        if argument not in supported["options"]:
-            raise ValueError(f"Unsupported plot presentation option for {plot.function}: {argument}")
+            errors.append(f"Unsupported plot column argument for {plot.function}: {argument}{hint}")
+    invalid_options = sorted(set(plot.options) - set(supported["options"]))
+    if invalid_options:
+        errors.append(f"Unsupported plot presentation option for {plot.function}: {', '.join(invalid_options)}")
+    if errors:
+        raise ValueError("; ".join(errors))
     validate_plot_template(plot.options)
 
 
@@ -210,7 +221,7 @@ def validate_plot_candidate(frame: pd.DataFrame, plot: PlottingPlan, result: Acc
         return figure
     except (ValueError, TypeError, KeyError, NotImplementedError) as exc:
         detail = " ".join(str(exc).split())[:350]
-        hint = "Choose a simpler compatible encoding using the same accepted data and selection."
+        hint = "Correct the encoding using the supported arguments and exact selection; retain the essential analytical comparisons."
         raise PlotValidationError(f"{plot.function}: {detail}. {hint}") from exc
 
 
@@ -238,6 +249,8 @@ def render_plot(frame: pd.DataFrame, plot: PlottingPlan, title: str):
     """Use only the executed DataFrame as Plotly's data source."""
     validate_plot_arguments(plot)
     frame = filter_frame(frame, plot.filters)
+    if plot.function in GRID_PLOTS:
+        return render_grid(frame, plot, title)
     if plot.function == "imshow":
         if plot.columns:
             raise ValueError("imshow uses the full DataFrame without column arguments")
@@ -257,3 +270,38 @@ def render_plot(frame: pd.DataFrame, plot: PlottingPlan, title: str):
                 f"Plot references a missing result column: {argument}={value}"
             )
     return function(frame, title=title, **plot.columns, **plot.options)
+
+
+def render_grid(frame: pd.DataFrame, plot: PlottingPlan, title: str):
+    """Reshape explicitly mapped cell values; never choose or compute their meaning."""
+    if set(plot.columns) != {"x", "y", "z"} or any(not isinstance(v, str) for v in plot.columns.values()):
+        raise ValueError(f"{plot.function} requires one exact field each for x, y and z")
+    x, y, z = (plot.columns[key] for key in ("x", "y", "z"))
+    if len({x, y, z}) != 3:
+        raise ValueError(f"{plot.function} requires distinct x, y and z fields")
+    if frame[[x, y]].isna().any().any():
+        raise ValueError("Grid coordinates must be present; missing locations cannot identify cells")
+    if frame.duplicated([x, y]).any():
+        raise ValueError("Grid coordinates are duplicated; Analysis must return one value per cell. No aggregation is performed.")
+    if not pd.api.types.is_numeric_dtype(frame[z]):
+        raise ValueError("Grid z values must be numeric")
+    if frame[[x, y, z]].isin([float("inf"), float("-inf")]).any().any():
+        raise ValueError("Grid coordinates and values cannot be infinite")
+    # Pivot performs no aggregation. Preserve first-seen category order for heatmaps.
+    grid = frame.pivot(index=y, columns=x, values=z)
+    if plot.function == "heatmap":
+        grid = grid.reindex(index=frame[y].drop_duplicates(), columns=frame[x].drop_duplicates())
+    else:
+        if not all(pd.api.types.is_numeric_dtype(frame[field]) for field in (x, y)):
+            raise ValueError("Contour grid coordinates must be numeric")
+        valid = grid.notna().to_numpy()
+        if min(valid.shape) < 2 or not (
+            valid[:-1, :-1] & valid[1:, :-1] & valid[:-1, 1:] & valid[1:, 1:]
+        ).any():
+            raise ValueError("Contour has no complete adjacent grid cell. Analysis must supply surface grid values; scattered observations cannot be interpolated by Plotting.")
+    layout_options = {k: v for k, v in plot.options.items() if k in {"width", "height", "template"}}
+    trace_options = {k: v for k, v in plot.options.items() if k not in layout_options}
+    figure = go.Figure(GRID_PLOTS[plot.function](x=grid.columns.tolist(), y=grid.index.tolist(),
+        z=grid.to_numpy(), connectgaps=False, colorbar={"title": z}, **trace_options))
+    figure.update_layout(title=title, xaxis_title=x, yaxis_title=y, **layout_options)
+    return figure

@@ -213,21 +213,27 @@ def plot(
     prompt = split_stable_and_repair_context(
         {
             "available_plots": plot_descriptions(),
+            "available_plot_arguments": plot_capabilities(),
             "renderer_templates": registered_plot_templates(),
         },
         {
-            "title": spec.title,
+            "title": title or spec.title,
             "question": spec.question,
             "original_request": original_request,
             "presentation_selection": [item.model_dump() for item in (selection or [])],
             "visualisation_goal": spec.visualisation_goal,
             "analytical_result": {
+                "population_definition": spec.population_definition,
+                "observation_rule": spec.observation_rule,
+                "rationale": spec.rationale,
                 "grain": spec.grain,
+                "variant_field": spec.variant_field,
                 "dimensions": [item.model_dump() for item in spec.dimensions],
                 "measures": [item.model_dump() for item in spec.measures],
                 "row_count": result.row_count,
                 "columns": result.columns,
                 "profile": [item.model_dump() for item in result.profile],
+                "profile_scope": "Full accepted result; rendering applies presentation_selection",
             },
         },
     )

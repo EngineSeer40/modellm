@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 from src import agents
-from src.visualisation import plot_descriptions
+from src.visualisation import plot_capabilities, plot_descriptions
 from src.core.contracts import AcceptedAnalysisResult, AnalysisDimension, AnalysisMeasure, AnalysisSpec, PlottingPlan, ResultColumnProfile, QueryDefinition, registered_plot_templates
 
 def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monkeypatch, tmp_path):
@@ -35,8 +35,14 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
     assert 'sample_rows' not in json.dumps(payload)
     assert 'main.fact_events' not in json.dumps(payload)
     assert payload['available_plots'] == plot_descriptions()
+    assert payload['available_plot_arguments'] == plot_capabilities()
     assert payload['renderer_templates'] == registered_plot_templates()
     result_context = payload['analytical_result']
+    assert result_context['population_definition'] == spec.population_definition
+    assert result_context['observation_rule'] == spec.observation_rule
+    assert result_context['rationale'] == spec.rationale
+    assert result_context['variant_field'] == spec.variant_field
+    assert result_context['profile_scope'] == 'Full accepted result; rendering applies presentation_selection'
     assert 'profile' in result_context
     assert 'dimensions' in result_context
     assert 'measures' in result_context
@@ -47,4 +53,4 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
                 result, lambda *args: None, tmp_path / 'modellm.duckdb', original_request='Another request',
                 frame=pd.DataFrame({'event_day': ['2026-01-02'], 'cohort': ['B'], 'event_count': [2]}))
     assert captured['blocks'][0] == shared
-    assert set(json.loads(shared['text'])) == {'available_plots', 'renderer_templates'}
+    assert set(json.loads(shared['text'])) == {'available_plots', 'available_plot_arguments', 'renderer_templates'}

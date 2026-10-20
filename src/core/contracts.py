@@ -227,7 +227,7 @@ class AnalysisDimension(Contract):
     semantic_type: Literal[
         "temporal", "categorical", "ordinal", "geographic", "identifier", "other"
     ]
-    description: str = Field(description="Meaning of this returned column, including known units, coordinate system, bin boundaries or time grain where relevant; not a chart channel or expected finding")
+    description: str = Field(description="Meaning of this returned column, including known units, coordinate reference system, bin boundaries or time grain where relevant. Define the data; leave visual channel decisions to Plotting.")
 
 
 class RatioComponents(Contract):
@@ -248,7 +248,7 @@ class AnalysisMeasure(Contract):
         "numeric",
         "other",
     ]
-    description: str = Field(description="Quantity represented by this returned column, its known unit and calculation basis, such as a total, average, count or rate; not a chart channel or expected finding")
+    description: str = Field(description="Quantity represented by this returned column, its known unit and calculation basis, such as a total, average, count or rate. Define the quantity rather than a visual channel; visualisation_goal distinguishes essential comparisons from supporting context.")
     additivity: Literal["additive", "semi_additive", "non_additive"]
     components: RatioComponents | None = None
 
@@ -291,17 +291,17 @@ class AnalysisSpec(Contract):
         min_length=1, description="Groups related analyses of one concept in the dashboard; does not itself create figures"
     )
     population_definition: str = Field(min_length=1, description="Who or what is included after qualification and query filters, including denominator scope where relevant")
-    observation_rule: str | None = Field(description="Quality, calculation or grouping rules beyond the stated population and row grain; null when no additional rule applies")
+    observation_rule: str | None = Field(description="Quality, calculation or grouping rules actually applied to observations beyond the stated population and row grain; null when none. Describe data treatment, not chart choices or renderer-capability claims.")
     variant_field: str | None = Field(
         default=None,
         description="Exact result column whose values identify alternate views. Each distinct value, including a null-valued group, creates a separate figure from matching rows. Selects rows, not measure columns or individual readings. Leave variant_field null to render the result once.",
     )
-    rationale: str = Field(description="Why the SQL method answers the question; not a chart plan, renderer claim or anticipated finding")
+    rationale: str = Field(description="Why the SQL method, preparation and chosen observation grain answer the question, with evidence for methodological choices and limitations. Explain the analysis rather than prescribing visual channels, asserting outcomes or inventing renderer restrictions.")
     grain: str = Field(description="What one result row represents")
     dimensions: list[AnalysisDimension]
     measures: list[AnalysisMeasure]
     visualisation_goal: str = Field(
-        description="Comparison, relationship or pattern the returned rows can communicate; presentation intent for Plotting, not a chart function, visual channel, uncomputed transformation or anticipated finding"
+        description="Essential comparisons, relationships or patterns from the original request that a reader should assess using the returned rows, distinguished from supporting context. State evidence-based data limitations and any unmet requirement. Leave visual channels to Plotting; do not replace the requested purpose with a fallback, promise uncomputed transformations or assert outcomes."
     )
 
 class AnalyticalPlan(Contract):
@@ -504,15 +504,15 @@ def validate_plot_template(options: dict) -> None:
 
 
 class PlottingPlan(Contract):
-    function: str = Field(description="One Plotly Express function listed in available_plots whose meaning fits the accepted result")
+    function: str = Field(description="One Plotly function listed in available_plots whose operation and required data shape fit the accepted result")
     columns: dict[str, Any] = Field(
-        description="Plotly Express column arguments for the chosen function, mapped to exact accepted field names or supported lists of names; no data arrays or presentation settings"
+        description="Column arguments for the chosen Plotly function, mapped to exact accepted field names or supported lists of names. Native heatmap/contour use x/y/z fields for already-calculated grid cells. No data arrays or presentation settings."
     )
     filters: list[ResultFilter] = Field(
         description="Exactly the supplied presentation_selection, with no additional population filters; empty list when none is supplied"
     )
     options: dict[str, Any] = Field(
-        description="Plotly Express presentation options supported by the chosen function, such as orientation=h; template must be a registered name from renderer_templates. Never field references or data arrays. Empty object if none."
+        description="Scalar presentation options listed for the chosen function in available_plot_arguments; template must be a registered name from renderer_templates. Never field references or data arrays. Empty object if none."
     )
 
     @model_validator(mode="after")

@@ -100,3 +100,17 @@ def test_nonempty_wide_plot_must_draw_traces(function):
     corrected = {**bad, 'columns': {key: value for key, value in bad['columns'].items()
                                    if key != 'hover_data'}}
     assert schema.model_validate(corrected).function == function
+
+
+def test_one_correction_receives_all_unsupported_options():
+    frame = pd.DataFrame({'position': [1, 2], 'reading': [4.0, 5.0]})
+    result = AcceptedAnalysisResult(result_id='result_00', relation='analysis.result_00',
+        row_count=2, columns={'position': 'INTEGER', 'reading': 'DOUBLE'}, profile=[])
+    schema = accepted_result_plot_schema(result, frame=frame)
+    proposal = {'function': 'scatter', 'columns': {'x': 'position', 'y': 'reading'},
+                'filters': [], 'options': {'size_max': 15, 'title': 'Readings', 'color_continuous_scale': 'Viridis'}}
+    with pytest.raises(ValidationError) as error:
+        schema.model_validate(proposal)
+    feedback = str(error.value)
+    assert all(key in feedback for key in proposal['options'])
+    assert schema.model_validate({**proposal, 'options': {}}).columns == proposal['columns']
