@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from src import agents
 from src.agent_runtime import InvocationLimitError
 from src.config import ReleaseSettings, use_settings
+from src.execution import RunBudgetExceededError
 from src.core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlottingPlan, QueryDefinition
 from src.run import RunRecord
 from src.workflow import _render_visualisations
@@ -62,16 +63,20 @@ def test_failed_chart_is_skipped_between_successful_charts(plot_case, monkeypatc
     assert all((plot_case.record.workspace.run_dir / chart['file']).exists() for chart in state['charts'])
 
 
-@pytest.mark.parametrize('error', [ValueError('Internal model calls exceeds configured limit'),
-    RuntimeError('Reported model cost budget exhausted'),
+@pytest.mark.parametrize('error', [RunBudgetExceededError('Internal model calls exceeds configured limit'),
+    RunBudgetExceededError('Reported model cost budget exhausted'),
     TimeoutError('Provider connection timed out')])
-def test_global_and_transport_errors_are_not_skipped(plot_case, monkeypatch, error):
+def test_budget_and_transport_errors_preserve_completed_plotting(plot_case, monkeypatch, error):
     def fail(*args, **kwargs):
         raise error
     monkeypatch.setattr(agents, 'plot', fail)
-    with pytest.raises(type(error), match=str(error)):
-        _render_visualisations(plot_case.record, plot_case.accepted, frozenset())
-    assert not plot_case.record.state['plot_attempts']
+    _render_visualisations(plot_case.record, plot_case.accepted, frozenset())
+    state = plot_case.record.state
+    expected_attempts = 1 if isinstance(error, RunBudgetExceededError) else len(plot_case.accepted)
+    assert len(state['plot_attempts']) == expected_attempts
+    assert all(attempt['status'] == 'skipped' and str(error) in attempt['error']
+               for attempt in state['plot_attempts'])
+    assert state['events'][-1]['kind'] == 'done'
 
 
 def test_artifact_write_failure_is_not_skipped(plot_case, monkeypatch):
