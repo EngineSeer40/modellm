@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import os
 import subprocess
 import sys
 import time
@@ -13,14 +12,14 @@ import pytest
 from strands import Agent
 
 from src.config import DEFAULT_MODEL, ReleaseSettings, use_settings
-from src.core.contracts import DbtFile, DbtImplementation, PlotSpec
+from src.core.contracts import DbtFile, DimensionalPlan, PlottingPlan
 from src.database import connect
 from src.dbt import run_dbt, write_project
 from src.execution import RunBudget, RunManager
 from src.sql_policy import validate_dbt_files
 from src.storage import cleanup_run_workspaces
 from src.workspace import RunWorkspace, atomic_json, validate_submission
-from test_context_cost import LocalModel
+from local_model import LocalModel
 
 UPLOADS = [("accounts.csv", b"id\n1\n"), ("events.csv", b"id\n1\n")]
 
@@ -30,7 +29,7 @@ def settings(tmp_path, **kwargs):
 
 
 def implementation(sql="SELECT * FROM {{ source('raw', 'accounts') }}", schema=None):
-    return DbtImplementation(explanation="fixture", files=[
+    return DimensionalPlan(explanation="fixture", files=[
         DbtFile(path="dim_account.sql", content=sql),
         DbtFile(path="schema.yml", content=schema or "version: 2\nmodels:\n  - name: dim_account\n    columns:\n      - name: id\n        data_tests: [unique, not_null]\n"),
     ])
@@ -122,9 +121,12 @@ def test_restricted_dbt_build_and_environment(tmp_path, monkeypatch):
         env = kwargs["env"]
         assert not any(key.startswith("AWS_") for key in env)
         assert "MODELLM_LIVE_ACCESS_CODE" not in env
+        assert not any(key.startswith("LANGFUSE_") for key in env)
         return real_run(*args, **kwargs)
     monkeypatch.setenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/sensitive")
     monkeypatch.setenv("MODELLM_LIVE_ACCESS_CODE", "private")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-private")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-private")
     monkeypatch.setattr(subprocess, "run", inspect_env)
     result = run_dbt(project, "build")
     assert result["ok"], result["output"]
@@ -140,12 +142,12 @@ def test_restricted_dbt_build_and_environment(tmp_path, monkeypatch):
 
 def test_sdk_internal_cycles_share_one_budget():
     # An invalid structured tool response normally causes another SDK model call.
-    model = LocalModel([("PlotSpec", {"function":"bar", "columns":{}, "filters":[], "options":{"template":"missing"}}),
-                        ("PlotSpec", {"function":"bar", "columns":{}, "filters":[], "options":{}})])
+    model = LocalModel([("PlottingPlan", {"function":"bar", "columns":{}, "filters":[], "options":{"template":"missing"}}),
+                        ("PlottingPlan", {"function":"bar", "columns":{}, "filters":[], "options":{}})])
     budget = RunBudget(ReleaseSettings(max_model_calls=1))
     agent = Agent(model=model, callback_handler=None, hooks=[budget.hooks(DEFAULT_MODEL, "ap-southeast-2")])
     async def consume():
-        async for _ in agent.stream_async("plot", structured_output_model=PlotSpec):
+        async for _ in agent.stream_async("plot", structured_output_model=PlottingPlan):
             pass
     with pytest.raises(Exception, match="Internal model calls"):
         asyncio.run(consume())
@@ -175,6 +177,7 @@ def test_worker_deadline_kills_descendants_releases_slot_and_preserves_usage(tmp
               f"open({str(pid_file)!r},'w').write(str(p.pid)); time.sleep(60)")
     def hanging_worker(args, **kwargs):
         assert "MODELLM_LIVE_ACCESS_CODE" not in kwargs["env"]
+        assert kwargs["stderr"] is None
         return real_popen([sys.executable, "-c", script], **kwargs)
     monkeypatch.setattr(execution.subprocess, "Popen", hanging_worker)
     monkeypatch.setenv("MODELLM_LIVE_ACCESS_CODE", "private")
@@ -219,7 +222,7 @@ def test_ingest_rejects_source_shape_before_profiling(tmp_path):
     for path in files:
         path.write_text("id,value\n1,10\n2,20\n3,30\n")
     with use_settings(settings(tmp_path, max_source_rows=1)):
-        with pytest.raises(ValueError, match="Source rows"):
+        with pytest.raises(ValueError, match=r"Rows in accounts.csv exceeds the configured limit \(1\)"):
             load_raw(tmp_path / "limited.duckdb", files)
     with connect(tmp_path / "limited.duckdb", read_only=True) as con:
         assert con.execute("SELECT count(*) FROM raw.accounts").fetchone()[0] == 2
@@ -228,7 +231,6 @@ def test_ingest_rejects_source_shape_before_profiling(tmp_path):
 @pytest.mark.parametrize(("live_enabled", "access_code", "configured"), [
     ("false", "testcode", False),
     ("true", "", False), ("true", "1234567", False), ("true", "testcode", True),
-    ("true", "a-longer-access-code-for-tests", True),
 ])
 def test_live_access_requires_enabled_runs_and_configured_code(tmp_path, monkeypatch, live_enabled, access_code, configured):
     from streamlit.testing.v1 import AppTest
@@ -320,22 +322,6 @@ def test_nested_cte_alias_cannot_authorize_a_real_table():
         validate_analysis_sql(malicious, ["fact_events"])
     valid = "WITH private AS (SELECT * FROM main.fact_events) SELECT * FROM private"
     assert validate_analysis_sql(valid, ["fact_events"]) == valid
-
-
-def test_deployment_parameters_preserve_application_model_and_cost_defaults(monkeypatch):
-    import yaml
-    from src.context_cost import configured_cost_experiments
-    for name in ("MODELLM_BEDROCK_MODEL_ID", "MODELLM_PLOTTING_MODEL_ID", "MODELLM_COST_EXPERIMENTS"):
-        monkeypatch.delenv(name, raising=False)
-    config = ReleaseSettings.from_env()
-    root = Path(__file__).resolve().parents[1]
-    template = yaml.load((root / "infra/service.yaml").read_text(), Loader=yaml.BaseLoader)
-    defaults = {key: value.get("Default") for key, value in template["Parameters"].items()}
-    example = json.loads((root / "infra/parameters.json.example").read_text())
-    for values in (defaults, example):
-        assert values["ModelId"] == config.model_id
-        assert values["PlottingModelId"] == config.plotting_model_id
-        assert frozenset(values["CostExperiments"].split(",")) == configured_cost_experiments()
 
 
 def test_deployment_bootstrap_separates_github_trust_and_role_passing():

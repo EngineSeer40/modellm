@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from src.config import ReleaseSettings, use_settings
-from src.core.contracts import DbtFile, DbtImplementation
+from src.core.contracts import DbtFile, DimensionalPlan
 from src.database import connect
 from src.dbt import run_dbt, write_project
 from src.execution import RunManager
@@ -20,7 +20,7 @@ with use_settings(config):
     with connect(workspace.database, ingest=True) as con:
         con.execute("CREATE SCHEMA raw")
         con.execute("CREATE TABLE raw.accounts AS SELECT 1 AS id")
-    proposal = DbtImplementation(explanation="synthetic smoke", files=[
+    proposal = DimensionalPlan(explanation="synthetic smoke", files=[
         DbtFile(path="dim_account.sql", content="SELECT * FROM {{ source('raw','accounts') }}"),
         DbtFile(path="schema.yml", content="version: 2\nmodels:\n  - name: dim_account\n    columns:\n      - name: id\n        data_tests: [unique, not_null]\n"),
     ])

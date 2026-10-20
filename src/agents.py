@@ -2,6 +2,7 @@ import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+import pandas as pd
 from opentelemetry.util.types import AttributeValue
 
 from src.core.prompt import ANALYSIS, ANALYSIS_FINDING, CONCEPTUAL_MODEL, DIMENSIONAL_MODEL, PLOTTING
@@ -13,17 +14,18 @@ from src.tools.result_tools import DuckDBResultTools
 from .core.contracts import (
     AcceptedAnalysisResult,
     AnalysisFinding,
-    AnalysisPlan,
-    AnalysisSpec,
     AnalyticalPlan,
-    DbtImplementation,
+    AnalysisSpec,
+    ConceptualPlan,
+    DimensionalPlan,
     EarlyValidatedAnalysisFinding,
-    PlotSpec,
+    PlottingPlan,
     ResultFilter,
     ValidationIssue,
     registered_plot_templates,
 )
-from .visualisation import plot_capabilities
+from .config import current_settings
+from .visualisation import accepted_result_plot_schema, plot_capabilities, plot_descriptions
 from .agent_runtime import invoke
 from .context_cost import (
     configured_cost_experiments,
@@ -37,11 +39,11 @@ def conceptual(
     relationships: list[dict],
     emit: Callable,
     feedback: list[ValidationIssue] | None = None,
-    previous: AnalyticalPlan | None = None,
+    previous: ConceptualPlan | None = None,
     *,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
-) -> AnalyticalPlan:
+) -> ConceptualPlan:
     experiments = configured_cost_experiments(cost_experiments)
     stable = {
         "request": request,
@@ -56,22 +58,22 @@ def conceptual(
               else json.dumps({**stable, **repair}, default=str))
     system_prompt = CONCEPTUAL_MODEL + (CONCEPTUAL_REFERENCE_GUIDANCE if "conceptual_guidance" in experiments else "")
     return invoke(
-        prompt, AnalyticalPlan, "conceptual modelling", emit, system_prompt, cost_experiments=experiments,
+        prompt, ConceptualPlan, "conceptual modelling", emit, system_prompt, cost_experiments=experiments,
         trace_attributes=trace_attributes,
     )
 
 
 def implement(
-    plan: AnalyticalPlan,
+    plan: ConceptualPlan,
     profiles: dict,
     relationships: list[dict],
     emit: Callable,
     failure: str = "",
-    previous: DbtImplementation | None = None,
+    previous: DimensionalPlan | None = None,
     *,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
-) -> DbtImplementation:
+) -> DimensionalPlan:
     prompt = split_stable_and_repair_context(
         {
             "plan": plan.model_dump(), "profiles": profiles, "relationships": relationships,
@@ -82,7 +84,7 @@ def implement(
         },
     )
     return invoke(
-        prompt, DbtImplementation, "generating dbt models", emit, DIMENSIONAL_MODEL,
+        prompt, DimensionalPlan, "generating dbt models", emit, DIMENSIONAL_MODEL,
         cost_experiments=cost_experiments,
         trace_attributes=trace_attributes,
     )
@@ -90,35 +92,42 @@ def implement(
 
 def analyse(
     request: str,
-    plan: AnalyticalPlan,
+    plan: ConceptualPlan,
     model_schemas: dict,
     summaries: dict,
     emit: Callable,
     database: Path,
     feedback: str = "",
-    previous: AnalysisPlan | None = None,
+    previous: AnalyticalPlan | None = None,
     *,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
-) -> AnalysisPlan:
+) -> AnalyticalPlan:
     experiments = configured_cost_experiments(cost_experiments)
     db = DuckDBAnalysisTools(database, list(model_schemas))
     small_previews = "small_analysis_previews" in experiments
+    settings = current_settings()
 
-    prompt = json.dumps(
+    prompt = split_stable_and_repair_context(
         {
             "request": request,
-            "analytical_plan": plan.model_dump(),
+            "conceptual_plan": plan.model_dump(),
             "validated_schemas": model_schemas,
             "model_summaries": summaries,
+            "available_plots": plot_descriptions(),
+            "limits": {
+                "max_analyses": settings.max_analyses,
+                "max_charts": settings.max_charts,
+            },
+        },
+        {
             "previous_analysis": previous.model_dump() if previous else None,
             "previous_acceptance_error": feedback,
         },
-        default=str,
     )
     result = invoke(
         prompt,
-        AnalysisPlan,
+        AnalyticalPlan,
         "analytical interpretation",
         emit,
         ANALYSIS + (ANALYSIS_PREVIEW_GUIDANCE if small_previews else ""),
@@ -142,11 +151,12 @@ def interpret(
     feedback: str = "",
     previous: AnalysisFinding | None = None,
     *,
+    executed_sql: str,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
 ) -> AnalysisFinding:
     experiments = configured_cost_experiments(cost_experiments)
-    prompt = json.dumps(
+    prompt = split_stable_and_repair_context(
         {
             "title": spec.title,
             "question": spec.question,
@@ -158,12 +168,15 @@ def interpret(
             "dimensions": [item.model_dump() for item in spec.dimensions],
             "measures": [item.model_dump() for item in spec.measures],
             "variant_field": spec.variant_field,
+            "visualisation_goal": spec.visualisation_goal,
+            "executed_sql": executed_sql,
             "result": result.model_dump(),
+        },
+        {
             "previous_finding_error": feedback,
             "previous_finding": previous.model_dump() if previous else None,
             "registered_evidence": db.registry.snapshot(),
         },
-        default=str,
     )
     return invoke(
         prompt,
@@ -180,14 +193,16 @@ def interpret(
 def plot(
     spec: AnalysisSpec,
     result: AcceptedAnalysisResult,
-    finding: dict,
     emit: Callable,
     database: Path,
     selection: list[ResultFilter] | None = None,
     *,
+    original_request: str,
+    frame: pd.DataFrame,
+    title: str | None = None,
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
-) -> PlotSpec:
+) -> PlottingPlan:
 
     db = DuckDBResultTools(
         database=database,
@@ -195,32 +210,37 @@ def plot(
         columns=set(result.columns),
     )
 
-    prompt = json.dumps(
+    prompt = split_stable_and_repair_context(
         {
-            "title": spec.title,
+            "available_plots": plot_descriptions(),
+            "available_plot_arguments": plot_capabilities(),
+            "renderer_templates": registered_plot_templates(),
+        },
+        {
+            "title": title or spec.title,
             "question": spec.question,
-            "finding": finding,
-            "concept_id": spec.concept_id,
-            "variant_field": spec.variant_field,
+            "original_request": original_request,
             "presentation_selection": [item.model_dump() for item in (selection or [])],
             "visualisation_goal": spec.visualisation_goal,
-            "renderer_capabilities": plot_capabilities(),
-            "renderer_templates": registered_plot_templates(),
             "analytical_result": {
+                "population_definition": spec.population_definition,
+                "observation_rule": spec.observation_rule,
+                "rationale": spec.rationale,
                 "grain": spec.grain,
+                "variant_field": spec.variant_field,
                 "dimensions": [item.model_dump() for item in spec.dimensions],
                 "measures": [item.model_dump() for item in spec.measures],
                 "row_count": result.row_count,
                 "columns": result.columns,
                 "profile": [item.model_dump() for item in result.profile],
+                "profile_scope": "Full accepted result; rendering applies presentation_selection",
             },
         },
-        default=str,
     )
 
     return invoke(
         prompt,
-        PlotSpec,
+        accepted_result_plot_schema(result, selection, frame=frame, title=title or spec.title),
         "visualisation generation",
         emit,
         PLOTTING,
@@ -229,4 +249,5 @@ def plot(
         ],
         cost_experiments=cost_experiments,
         trace_attributes=trace_attributes,
+        limits={"turns": 4},
     )

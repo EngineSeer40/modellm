@@ -11,6 +11,7 @@ from src.ui.saved_run import load_saved_run
 
 
 def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, monkeypatch):
+    trace_url = "https://cloud.langfuse.com/project/demo/traces/existing"
     snapshot = tmp_path / "saved_run"
     snapshot.mkdir()
     go.Figure(go.Bar(x=["customers"], y=[2])).write_json(snapshot / "chart_0.json")
@@ -24,7 +25,10 @@ def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, mo
         "analysis": {"analyses": [{"title": "Customer count", "concept_id": "count"}]},
         "charts": [{"title": "Customer count", "file": "chart_0.json", "result_index": 0}],
         "findings": [{"text": "There are two customers", "evidence": []}],
+        "quality_warnings": ["Unresolved source issue"],
     }
+    if trace_url:
+        state["langfuse_trace_url"] = trace_url
     (snapshot / "result.json").write_text(json.dumps(state))
     assert load_saved_run(snapshot)["run_dir"] == str(snapshot)
     assert load_saved_run(snapshot / "result.json")["run_dir"] == str(snapshot)
@@ -33,16 +37,20 @@ def test_saved_run_uses_copied_artifacts_and_never_starts_execution(tmp_path, mo
         pytest.fail("Saved dashboards must not start workers or retention cleanup")
 
     monkeypatch.setattr("src.ui.app.run_manager", forbidden)
+    monkeypatch.setattr("src.telemetry.configure_langfuse", forbidden)
     monkeypatch.setattr(sys, "argv", ["app.py", "--saved-run", str(snapshot)])
     root = Path(__file__).resolve().parents[1]
     app = AppTest.from_file(root / "app.py").run(timeout=20)
     assert not app.exception
+    assert not app.tabs[1].warning
     assert app.session_state["ui_surface"] == "Results"
     assert len(app.get("plotly_chart")) == 1
     assert not app.get("file_uploader")
     assert not any(button.label == "Start Modelling" for button in app.button)
     assert not any("expired" in message.value for message in app.info)
     assert [tab.label for tab in app.tabs] == ["Run", "Results", "Data Model", "Technical Details"]
+    links = [item.value for item in app.header if "Langfuse Full Trace" in item.value]
+    assert links == ([f"[Langfuse Full Trace]({trace_url})"] if trace_url else [])
     app.run(timeout=20)
     assert not app.exception and len(app.get("plotly_chart")) == 1
     # Relocating a run must not change its recorded original result on disk.

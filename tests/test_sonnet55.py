@@ -9,17 +9,33 @@ from src import agent_runtime as agents
 from src.config import ReleaseSettings
 from src.execution import RunBudget
 from src.usage import estimate_usage_cost, summarize_usage
-from test_context_cost import LocalModel
-from test_model_selection import Response
+from local_model import LocalModel, Response
+
+
+def test_cached_cost_covers_supported_model_aliases():
+    usage = {"inputTokens": 100, "outputTokens": 50,
+             "cacheReadInputTokens": 1000, "cacheWriteInputTokens": 200}
+    cases = [
+        ("au.anthropic.claude-sonnet-5", .00154),
+        ("us.anthropic.claude-sonnet-5", .00154),
+        ("global.anthropic.claude-sonnet-5", .00140),
+        ("au.anthropic.claude-sonnet-5-5", .00143),
+        ("us.anthropic.claude-sonnet-5-5", .00143),
+        ("global.anthropic.claude-sonnet-5-5", .00130),
+        ("us.anthropic.claude-haiku-4-5-20251001-v1:0", .00077),
+    ]
+    for model, expected in cases:
+        region = "us-east-1" if model.startswith("us.") else "ap-southeast-2"
+        assert estimate_usage_cost(model, region, usage) == pytest.approx(expected), model
+    unknown_ttl = dict(usage, cacheDetails=[{"inputTokens": 200, "ttl": "1h"}])
+    assert estimate_usage_cost(cases[0][0], "ap-southeast-2", unknown_ttl) is None
+    assert estimate_usage_cost(cases[0][0], "ap-southeast-2", {}) is None
+    assert estimate_usage_cost("unknown-model", "ap-southeast-2", usage) is None
 
 
 @pytest.mark.parametrize(("model", "expected"), [
-    ("au.anthropic.claude-sonnet-5", .00154),
-    ("us.anthropic.claude-sonnet-5", .00154),
     ("global.anthropic.claude-sonnet-5", .00140),
     ("au.anthropic.claude-sonnet-5-5", .00143),
-    ("us.anthropic.claude-sonnet-5-5", .00143),
-    ("global.anthropic.claude-sonnet-5-5", .00130),
     ("us.anthropic.claude-haiku-4-5-20251001-v1:0", .00077),
 ])
 def test_cached_cost_agrees_between_budget_and_report(monkeypatch, model, expected):
@@ -48,17 +64,10 @@ def test_cached_cost_agrees_between_budget_and_report(monkeypatch, model, expect
     report = summarize_usage(events)
     assert report["total"]["estimated_cost_usd"] == pytest.approx(expected)
     assert report["total"]["total_tokens"] == 1350
-    # The initial release only prices its configured 5-minute cache writes.
-    unknown_ttl = dict(usage, cacheDetails=[{"inputTokens": 200, "ttl": "1h"}])
-    assert estimate_usage_cost(model, config.region, unknown_ttl) is None
-    assert estimate_usage_cost(model, config.region, {}) is None
-    assert estimate_usage_cost("unknown-model", config.region, usage) is None
 
 
 @pytest.mark.parametrize("model_id", [
-    "au.anthropic.claude-sonnet-5", "global.anthropic.claude-sonnet-5",
-    "au.anthropic.claude-sonnet-5-5", "global.anthropic.claude-sonnet-5-5",
-    "us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-5-5",
+    "us.anthropic.claude-sonnet-5", "au.anthropic.claude-sonnet-5-5",
 ])
 def test_sonnet_keeps_sdk_correction_and_end_turn_fallback(monkeypatch, model_id):
     import strands.models

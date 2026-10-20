@@ -1,7 +1,11 @@
 """Plot selection should receive result meaning and statistics, not sample rows."""
 import json
+import pandas as pd
+import pytest
+from pydantic import ValidationError
 from src import agents
-from src.core.contracts import AcceptedAnalysisResult, AnalysisDimension, AnalysisMeasure, AnalysisSpec, PlotSpec, ResultColumnProfile, ModelOutput, FieldDefinition, FieldRef, MatchStep, MatchPair, OutputKeyPair, QueryDefinition, EvidenceRequest, EvidenceSort, EvidenceRowRef, FindingCell
+from src.visualisation import plot_capabilities, plot_descriptions
+from src.core.contracts import AcceptedAnalysisResult, AnalysisDimension, AnalysisMeasure, AnalysisSpec, PlottingPlan, ResultColumnProfile, QueryDefinition, registered_plot_templates
 
 def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monkeypatch, tmp_path):
     spec = AnalysisSpec(title='Daily cohort events', concept_id='events_by_cohort', population_definition='Recorded events', question='How do events vary by day and cohort?', rationale='Compare the recorded event counts at daily cohort grain.', grain='one row per day and cohort', dimensions=[AnalysisDimension(field='event_day', semantic_type='temporal', description='Event date'), AnalysisDimension(field='cohort', semantic_type='categorical', description='Cohort')], measures=[AnalysisMeasure(field='event_count', semantic_type='count', description='Recorded events', additivity='additive')], visualisation_goal='Show the daily pattern for both cohorts.', query=QueryDefinition(kind='direct', sql='SELECT event_day, cohort, event_count FROM main.fact_events'), observation_rule=None)
@@ -9,15 +13,44 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
     captured = {}
 
     def fake_invoke(prompt, schema, stage, emit, system_prompt, tools=None, **kwargs):
-        captured['payload'] = json.loads(prompt)
-        return PlotSpec(function='line', columns={'x': 'event_day', 'y': 'event_count'}, filters=[], options={})
+        captured['blocks'] = prompt
+        captured['payload'] = {key: value for block in prompt for key, value in json.loads(block['text']).items()}
+        captured['schema'] = schema
+        captured['limits'] = kwargs['limits']
+        return PlottingPlan(function='line', columns={'x': 'event_day', 'y': 'event_count'}, filters=[], options={})
     monkeypatch.setattr(agents, 'invoke', fake_invoke)
-    agents.plot(spec, result, {'text': 'Both cohorts contribute events.', 'evidence': []}, lambda *args: None, tmp_path / 'modellm.duckdb')
+    request = 'Show the daily pattern for both cohorts as a multiple-line chart.'
+    agents.plot(spec, result, lambda *args: None,
+                tmp_path / 'modellm.duckdb', original_request=request,
+                frame=pd.DataFrame({'event_day': ['2026-01-01'], 'cohort': ['A'], 'event_count': [1]}))
     payload = captured['payload']
+    assert payload['original_request'] == request
+    assert payload['visualisation_goal'] == spec.visualisation_goal
+    assert 'concept_id' not in payload
+    assert 'variant_field' not in payload
+    assert 'finding' not in payload
+    assert 'evidence' not in payload
+    with pytest.raises(ValidationError, match='missing accepted-result column'):
+        captured['schema'].model_validate({'function': 'line', 'columns': {'x': 'event_day', 'y': 'event_count', 'color': 'variable'}, 'filters': [], 'options': {}})
     assert 'sample_rows' not in json.dumps(payload)
     assert 'main.fact_events' not in json.dumps(payload)
+    assert payload['available_plots'] == plot_descriptions()
+    assert payload['available_plot_arguments'] == plot_capabilities()
+    assert payload['renderer_templates'] == registered_plot_templates()
     result_context = payload['analytical_result']
+    assert result_context['population_definition'] == spec.population_definition
+    assert result_context['observation_rule'] == spec.observation_rule
+    assert result_context['rationale'] == spec.rationale
+    assert result_context['variant_field'] == spec.variant_field
+    assert result_context['profile_scope'] == 'Full accepted result; rendering applies presentation_selection'
     assert 'profile' in result_context
     assert 'dimensions' in result_context
     assert 'measures' in result_context
     assert 'grain' in result_context
+    assert captured['limits'] == {'turns': 4}
+    shared = captured['blocks'][0]
+    agents.plot(spec.model_copy(update={'title': 'Another chart', 'question': 'Another question'}),
+                result, lambda *args: None, tmp_path / 'modellm.duckdb', original_request='Another request',
+                frame=pd.DataFrame({'event_day': ['2026-01-02'], 'cohort': ['B'], 'event_count': [2]}))
+    assert captured['blocks'][0] == shared
+    assert set(json.loads(shared['text'])) == {'available_plots', 'available_plot_arguments', 'renderer_templates'}

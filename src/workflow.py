@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Callable
 
 from .run import RunRecord, RunState
-from .telemetry import workflow_span, stage_span, reject_attempt
+from .telemetry import (
+    workflow_span, stage_span, reject_attempt, current_langfuse_trace_url, finish_workflow_trace,
+)
 from opentelemetry.trace import Status, StatusCode
 
 import plotly.graph_objects as go
@@ -15,19 +17,17 @@ from . import agents
 from .analysis import (
     AnalysisAcceptanceError, analysis_statement, accept_analyses, load_result_frame, result_metrics, summarize_models,
 )
-from .visualisation import (
-    render_plot, validate_plot_spec, representation_selections,
-)
+from .visualisation import validate_plot_candidate, representation_selections
 from .modelling_validation import plan_issues, validate_built_models
 from .core.contracts import (
-    CONTRACT_VERSION, AcceptedAnalysisResult, AnalysisPlan, AnalysisSpec, AnalyticalPlan, DbtImplementation,
+    CONTRACT_VERSION, AcceptedAnalysisResult, AnalyticalPlan, AnalysisSpec, ConceptualPlan, DimensionalPlan,
 )
 from .context_cost import configured_cost_experiments
 from .data import load_raw, profile, relationships, schemas
 from .dbt import dbt_results, run_dbt, write_project
 from .experiments import provenance, record_run
 from .config import ReleaseSettings, current_settings, use_settings, check_limit
-from .execution import current_budget, use_budget
+from .execution import RunBudgetExceededError, current_budget, use_budget
 from .storage import cleanup_run_workspaces
 from .workspace import RunWorkspace, validate_submission
 from .tools.result_tools import DuckDBResultTools, EvidenceRegistry, render_finding
@@ -57,10 +57,11 @@ def run(paths: list[Path], request: str, root: Path, *, on_event: Callable | Non
                 raise ValueError("Workspace inputs must not be symlinks")
         else:
             paths = workspace.persist(uploads, settings)
-        with use_settings(settings), use_budget(settings), workflow_span(workspace.run_id) as span:
+        with use_settings(settings), use_budget(settings), workflow_span(workspace.run_id, request) as span:
             result = _run(paths, request, workspace, on_event=on_event)
             if result["status"] == "failed":
                 span.set_status(Status(StatusCode.ERROR, result.get("error", "Workflow failed")))
+            finish_workflow_trace(span, result)
             return result
     finally:
         workspace.remove_inputs()
@@ -87,6 +88,8 @@ def _run(paths: list[Path], request: str, workspace: RunWorkspace, *, on_event: 
         "strands_version": version("strands-agents"),
     }
     record = RunRecord(workspace, state, on_event)
+    if trace_url := current_langfuse_trace_url():
+        state["langfuse_trace_url"] = trace_url
     events = state["events"]
 
     try:
@@ -94,7 +97,11 @@ def _run(paths: list[Path], request: str, workspace: RunWorkspace, *, on_event: 
         plan = _build_conceptual_model(record, request, names, profiles, links, cost_experiments)
         model_names = _build_models(record, names, plan, profiles, links, cost_experiments)
         analysis, accepted_results = _accept_analysis(record, request, plan, model_names, cost_experiments)
-        _generate_findings(record, accepted_results, cost_experiments)
+        # Finding is disabled pending removal; keep its implementation and saved-run fields.
+        state["findings"] = []
+        state["finding_attempts"] = []
+        state["evidence"] = []
+        # _generate_findings(record, accepted_results, cost_experiments)
         _render_visualisations(record, accepted_results, cost_experiments)
         state["quality_warnings"] = (
             [
@@ -122,7 +129,7 @@ def _run(paths: list[Path], request: str, workspace: RunWorkspace, *, on_event: 
     return state
 
 
-def _save_dbt_attempt(record: RunRecord, number: int, implementation: DbtImplementation) -> None:
+def _save_dbt_attempt(record: RunRecord, number: int, implementation: DimensionalPlan) -> None:
     state, emit, run_dir = record.state, record.emit, record.workspace.run_dir
     attempts_dir = run_dir / "attempts"
     attempts_dir.mkdir(exist_ok=True)
@@ -187,7 +194,7 @@ def _prepare_sources(record: RunRecord, paths: list[Path]) -> tuple[list[str], d
 
 
 def _build_conceptual_model(record: RunRecord, request: str, names: list[str],
-                            profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> AnalyticalPlan:
+                            profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> ConceptualPlan:
     state, emit = record.state, record.emit
     emit(
         "conceptual modelling",
@@ -221,7 +228,7 @@ def _build_conceptual_model(record: RunRecord, request: str, names: list[str],
                 {"issues": attempt["issues"], "revision": revision + 1},
             )
     if issues:
-        raise ValueError(f"AnalyticalPlan validation failed: {'; '.join(map(str, issues))}")
+        raise ValueError(f"ConceptualPlan validation failed: {'; '.join(map(str, issues))}")
     emit(
         "conceptual modelling",
         "contract_check",
@@ -235,7 +242,7 @@ def _build_conceptual_model(record: RunRecord, request: str, names: list[str],
     return plan
 
 
-def _build_models(record: RunRecord, names: list[str], plan: AnalyticalPlan,
+def _build_models(record: RunRecord, names: list[str], plan: ConceptualPlan,
                   profiles: dict, links: list[dict], cost_experiments: frozenset[str]) -> list[str]:
     state, emit = record.state, record.emit
     database = record.workspace.database
@@ -363,8 +370,8 @@ def _build_models(record: RunRecord, names: list[str], plan: AnalyticalPlan,
     return model_names
 
 
-def _accept_analysis(record: RunRecord, request: str, plan: AnalyticalPlan,
-                     model_names: list[str], cost_experiments: frozenset[str]) -> tuple[AnalysisPlan, AcceptedResults]:
+def _accept_analysis(record: RunRecord, request: str, plan: ConceptualPlan,
+                     model_names: list[str], cost_experiments: frozenset[str]) -> tuple[AnalyticalPlan, AcceptedResults]:
     state, emit = record.state, record.emit
     database = record.workspace.database
     settings = current_settings()
@@ -401,7 +408,9 @@ def _accept_analysis(record: RunRecord, request: str, plan: AnalyticalPlan,
             )
             try:
                 check_limit(len(proposed.analyses), settings.max_analyses, "Analysis count")
-                accepted_results = accept_analyses(database, model_names, proposed)
+                accepted_results = accept_analyses(
+                    database, model_names, proposed, max_charts=settings.max_charts
+                )
                 state["analysis_attempts"].append(
                     {"attempt": attempt + 1, "status": "accepted",
                      "proposal": proposed.model_dump()}
@@ -494,6 +503,7 @@ def _generate_findings(record: RunRecord, accepted_results: AcceptedResults,
             with stage_span(record.workspace.run_id, "analytical finding", attempt=attempt + 1, result_index=result_index) as trace_attributes:
                 finding = agents.interpret(
                     spec, accepted_result, emit, result_tools, feedback=finding_error, previous=finding,
+                    executed_sql=state["analysis_results"][result_index]["executed_sql"],
                     cost_experiments=cost_experiments,
                     trace_attributes=trace_attributes,
                 )
@@ -568,31 +578,38 @@ def _render_visualisations(record: RunRecord, accepted_results: AcceptedResults,
                 {"relation": accepted_result.relation, "row_count": 0},
             )
             continue
+        frame = load_result_frame(database, accepted_result)
         for variant_index, (label, selection) in enumerate(representation_selections(database, spec, accepted_result)):
             with stage_span(record.workspace.run_id, "visualisation generation", result_index=index) as trace_attributes:
                 title = spec.title if label is None else f"{spec.title} — {label}"
                 check_limit(len(state["charts"]) + 1, settings.max_charts, "Chart count")
-                plot = agents.plot(spec, accepted_result, state["findings"][index], emit, database,
-                                   selection=selection, cost_experiments=cost_experiments, trace_attributes=trace_attributes)
+                plot = None
                 try:
-                    validate_plot_spec(plot, accepted_result, selection)
-                    frame = load_result_frame(database, accepted_result)
-                    fig = render_plot(frame, plot, title)
-                    filename = f"chart_{index}_{variant_index}.json"
-                    fig.write_json(run_dir / filename)
-                    state["charts"].append({"result_index": index, "concept_id": spec.concept_id,
-                                            "title": title, "file": filename})
+                    plot = agents.plot(spec, accepted_result, emit, database,
+                                       selection=selection, original_request=state["request"],
+                                       frame=frame, title=title,
+                                       cost_experiments=cost_experiments, trace_attributes=trace_attributes)
+                    fig = validate_plot_candidate(frame, plot, accepted_result, selection, title)
                 except Exception as exc:
                     state["plot_attempts"].append(
-                        {"title": title, "status": "rejected", "plot": plot.model_dump(),
+                        {"title": title, "status": "skipped", "result_index": index,
+                         "concept_id": spec.concept_id, "relation": accepted_result.relation,
+                         "plot": plot.model_dump() if plot is not None else None,
                          "presentation_selection": [f.model_dump() for f in selection],
                          "error": f"{type(exc).__name__}: {exc}"}
                     )
-                    emit("visualisation generation", "failure", f"Plot failed for {title}: {type(exc).__name__}: {exc}",
+                    emit("visualisation generation", "failure", f"Chart skipped for {title}: {type(exc).__name__}: {exc}",
                          {"relation": accepted_result.relation,
                           "presentation_selection": [f.model_dump() for f in selection],
-                          "plot": plot.model_dump()})
-                    raise
+                          "plot": plot.model_dump() if plot is not None else None})
+                    if isinstance(exc, RunBudgetExceededError):
+                        emit("visualisation generation", "done", f"Rendered {len(state['charts'])} figures")
+                        return
+                    continue
+                filename = f"chart_{index}_{variant_index}.json"
+                fig.write_json(run_dir / filename)
+                state["charts"].append({"result_index": index, "concept_id": spec.concept_id,
+                                        "title": title, "file": filename})
                 state["plot_attempts"].append(
                     {"title": title, "status": "accepted", "plot": plot.model_dump()}
                 )

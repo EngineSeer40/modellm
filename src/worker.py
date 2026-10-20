@@ -7,7 +7,7 @@ from pathlib import Path
 from .config import ReleaseSettings
 from .workflow import run
 from .workspace import RunWorkspace
-from .telemetry import flush_telemetry
+from .telemetry import configure_langfuse, flush_telemetry
 
 
 def main() -> None:
@@ -21,7 +21,7 @@ def main() -> None:
     paths = [Path(path) for path in request["paths"]]
     if any(path.is_symlink() or path.resolve().parent != workspace.input_dir for path in paths):
         raise ValueError("Worker inputs must belong to its workspace")
-    # Future cloud exporter/provider setup belongs here, once per worker.
+    configure_langfuse()
     try:
         run(paths, request["request"], workspace.root, workspace=workspace, settings=settings)
     finally:

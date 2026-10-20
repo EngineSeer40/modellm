@@ -44,7 +44,7 @@ def render_outcome(state: RunState):
         st.error(failure_message(state))
         st.caption(f"Run ID: {state['run_id']} · Diagnostics are in Technical Details; usage is shown on Results.")
     elif state["status"] == "complete":
-        st.success("Analysis completed. Your dashboard and supporting findings are ready.")
+        st.success("Analysis completed. Your dashboard is ready.")
     else:
         st.info("This run has not completed.")
 
@@ -83,6 +83,8 @@ def render_results(state: RunState | None):
         st.info("Upload related datasets and describe your question in Run to create a dashboard.")
         return
     render_outcome(state)
+    if trace_url := state.get("langfuse_trace_url"):
+        st.header(f"[Langfuse Full Trace]({trace_url})")
     render_usage(state)
     if state["status"] != "complete":
         st.info("A completed run is required to display the dashboard. Data Model shows any model built so far.")
@@ -93,11 +95,18 @@ def render_results(state: RunState | None):
     for concept in concepts:
         related = [(index, item) for index, item in enumerate(analyses)
                    if item.get("concept_id", item["title"]) == concept]
+        related = [(index, item) for index, item in related
+                   if any(chart["result_index"] == index for chart in state.get("charts", []))
+                   or "plot_attempts" not in state]
+        if not related:
+            continue
         st.divider()
         st.subheader(related[0][1]["title"])
         for index, analysis in related:
             charts = [chart for chart in state.get("charts", []) if chart["result_index"] == index]
-            if not charts:
+            skipped = [attempt for attempt in state.get("plot_attempts", [])
+                       if attempt.get("result_index") == index and attempt.get("status") == "skipped"]
+            if not charts and not skipped:
                 charts = [{"title": analysis["title"], "file": f"chart_{index}.json"}]
             for chart in charts:
                 if len(charts) > 1 and chart["title"] != related[0][1]["title"]:
@@ -106,19 +115,20 @@ def render_results(state: RunState | None):
                 if path.exists():
                     st.plotly_chart(format_chart(pio.read_json(path)), width="stretch", key=f"chart_{state['run_id']}_{chart['file']}")
                 else:
-                    st.warning("This saved chart is unavailable. The findings and methodology remain below.")
+                    st.caption("This saved chart is unavailable. The methodology remains below.")
             findings = state.get("findings", [])
             finding = findings[index] if index < len(findings) else {}
             if finding.get("text"):
                 st.markdown("**Analysis Observations**")
                 st.table([{"Observation": " ".join(item.split())}
                           for item in finding_bullets(finding["text"])], hide_index=True)
-            with st.expander("Supporting evidence"):
-                for evidence in finding.get("evidence", []):
-                    st.caption(f"Evidence {evidence['id']}")
-                    st.dataframe(display_table([row.get("values", row) for row in evidence["rows"]]), hide_index=True, width="stretch")
-                    if evidence.get("truncated"):
-                        st.caption("This evidence preview is truncated; its selection is recorded in Technical Details.")
+            if finding.get("evidence"):
+                with st.expander("Supporting evidence"):
+                    for evidence in finding["evidence"]:
+                        st.caption(f"Evidence {evidence['id']}")
+                        st.dataframe(display_table([row.get("values", row) for row in evidence["rows"]]), hide_index=True, width="stretch")
+                        if evidence.get("truncated"):
+                            st.caption("This evidence preview is truncated; its selection is recorded in Technical Details.")
             with st.expander("Methodology"):
                 methodology = finding.get("methodology") or {
                     "question": analysis.get("question"), "population": analysis.get("population_definition"),
@@ -214,6 +224,14 @@ def render_data_model(state: RunState | None):
                              hide_index=True, width="stretch")
 
 
+def _unresolved_issues(issues, *, key):
+    with st.expander("Unresolved issues", key=key):
+        for issue in issues:
+            st.write(issue)
+        if not issues:
+            st.caption("None recorded")
+
+
 def render_technical(state: RunState | None):
     st.header("Technical Details")
     if not state:
@@ -223,14 +241,42 @@ def render_technical(state: RunState | None):
     if state.get("error"):
         with st.expander("Failure diagnostics"):
             st.code(state["error"], language=None)
+    source_issues = [
+        f"{r['orphan_rows']} orphan rows: {r['from']} → {r['to']}"
+        for r in state.get("relationships", []) if r.get("orphan_rows")
+    ] + [
+        f"{name}: {profile['duplicate_rows']} duplicate rows"
+        for name, profile in state.get("profiles", {}).items() if profile.get("duplicate_rows")
+    ]
+    analysis_issues = state.get("analysis", {}).get("warnings", [])
+    finding_issues = [issue for finding in state.get("findings", []) for issue in finding.get("caveats", [])]
+    st.subheader("Source profiling")
+    _unresolved_issues(source_issues, key=f"source_issues_{state['run_id']}")
     st.subheader("Conceptual modelling")
     _conceptual(state, [e for e in state.get("events", []) if e.get("stage") == "conceptual modelling"],
                 decisions_as_table=True)
     plan = state.get("plan", {})
-    for title, key in (("Assumptions", "assumptions"), ("Unresolved questions", "unresolved_questions")):
-        st.markdown(f"**{title}**")
-        st.table([{title: " ".join(str(item).split())} for item in plan.get(key, [])]
-                 or [{title: "None recorded"}], hide_index=True)
+    with st.expander("Unresolved issues", key=f"conceptual_issues_{state['run_id']}"):
+        for title, key in (("Assumptions", "assumptions"), ("Unresolved questions", "unresolved_questions")):
+            st.markdown(f"**{title}**")
+            st.table([{title: " ".join(str(item).split())} for item in plan.get(key, [])]
+                     or [{title: "None recorded"}], hide_index=True)
+    st.subheader("Analysis")
+    _unresolved_issues(analysis_issues, key=f"analysis_issues_{state['run_id']}")
+    if finding_issues:
+        st.subheader("Finding interpretation (saved run)")
+        _unresolved_issues(finding_issues, key=f"finding_issues_{state['run_id']}")
+    st.subheader("Plotting")
+    _unresolved_issues([
+        f"Chart skipped: {attempt['title']}. {attempt['error']}"
+        for attempt in state.get("plot_attempts", []) if attempt.get("status") == "skipped"
+    ], key=f"plotting_issues_{state['run_id']}")
+    known_issues = set(source_issues + analysis_issues + finding_issues)
+    unassigned = [issue for issue in state.get("quality_warnings", []) if issue not in known_issues]
+    if unassigned:
+        st.subheader("Other run diagnostics")
+        st.caption("These recorded issues have no identifiable source stage.")
+        _unresolved_issues(unassigned, key=f"other_issues_{state['run_id']}")
     st.subheader("Validation and repairs")
     repairs = repair_counts(state)
     st.dataframe([{"Stage": stage, "Repairs attempted": count} for stage, count in repairs.items()],

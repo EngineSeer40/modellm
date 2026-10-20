@@ -5,8 +5,10 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from pydantic import model_validator
 
-from .core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlotSpec, ResultFilter, validate_plot_template
+from .core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlottingPlan, ResultFilter, validate_plot_template
 from .database import connect
 
 
@@ -59,6 +61,13 @@ PLOTLY_PRESENTATION_ARGUMENTS = {
     "log_x", "log_y", "width", "height", "template", "text_auto",
 }
 
+GRID_PLOTS = {"heatmap": go.Heatmap, "contour": go.Contour}
+GRID_OPTIONS = {"width", "height", "template", "opacity", "colorscale", "showscale", "reversescale"}
+
+
+class PlotValidationError(ValueError):
+    """An encoding can be corrected without changing the accepted data."""
+
 
 def plot_capabilities() -> dict:
     """Tell the agent which arguments this renderer actually passes to Plotly."""
@@ -74,20 +83,73 @@ def plot_capabilities() -> dict:
             "columns": sorted(PLOTLY_COLUMN_ARGUMENTS & parameters.keys()) if name != "imshow" else [],
             "options": sorted(PLOTLY_PRESENTATION_ARGUMENTS & parameters.keys()),
         }
+    for name in GRID_PLOTS:
+        capabilities[name] = {"columns": ["x", "y", "z"], "options": sorted(GRID_OPTIONS)}
     return capabilities
 
 
-def validate_plot_arguments(plot: PlotSpec) -> None:
+def plot_descriptions() -> dict[str, str]:
+    """Selection guidance for Analysis, limited to the installed renderer's functions."""
+    descriptions = {
+        "heatmap": "Show already-calculated values in a two-dimensional cell matrix. Map x/y cell coordinates and z cell values; exactly one accepted row per x/y cell. The renderer only reshapes these fields: no aggregation, normalisation, interpolation or gap filling. Categorical axes are supported. Other result columns may retain counts or context without being part of the matrix.",
+        "contour": "Draw iso-value contours of an already-calculated surface. Map numeric x/y grid coordinates and numeric z surface values; exactly one accepted row per x/y grid node. A contour needs adjacent complete grid cells. The renderer only reshapes these values: no binning, interpolation of scattered observations, aggregation or gap filling. Analysis must construct any required surface in its SQL and declare its method, grid resolution and extent. This is distinct from density_contour, which bins observations.",
+        "area": "Show cumulative magnitude and changing composition over an ordered dimension; expects ordered positions, values and optional series.",
+        "bar": "Compare category magnitudes or rankings; expects categories and numeric values, optionally grouped or stacked.",
+        "bar_polar": "Compare magnitudes around directions or cyclic categories; expects angular positions and radial values.",
+        "box": "Compare medians, spread and outliers between groups; expects individual numeric observations and optional categories.",
+        "choropleth": "Compare values across geographic regions on a projected map; expects recognised region identifiers and numeric values.",
+        "choropleth_map": "Compare regions on a tile map; requires matching boundary geometry, which this renderer cannot currently supply.",
+        "density_contour": "Contour observation counts in x/y bins with this renderer's defaults. Color separates groups rather than defining contour levels. Supplying z does not make these iso-value contours of that measurement; this renderer does not expose a different histfunc for this function. It cannot construct an irregular measured surface.",
+        "density_heatmap": "Reveal hotspots and bands by binning observations across two dimensions; z is aggregated within bins, not interpolated into a measurement grid.",
+        "density_map": "Reveal geographic concentrations or weighted hotspots; expects latitude/longitude in degrees and an optional intensity measure.",
+        "ecdf": "Compare percentiles and distribution tails; turns numeric observations into cumulative proportions, optionally grouped.",
+        "funnel": "Compare quantities across ordered process stages to show progression or attrition; expects stage labels and values.",
+        "funnel_area": "Show the relative sizes of ordered stages as funnel areas; expects stage labels and numeric values.",
+        "histogram": "Explore distribution shape, frequency and tails; numeric observations are automatically binned and counted.",
+        "icicle": "Explore hierarchy and relative size with adjacent rectangles; expects hierarchy levels or parent/child identifiers and optional values.",
+        "imshow": "Reveal patterns in a numeric matrix or regular raster, such as a value grid or correlation matrix; expects an already-shaped matrix.",
+        "line": "Show trends, profiles or transitions over time, distance or another ordered dimension; expects ordered positions, values and optional series.",
+        "line_3d": "Show a trajectory or ordered profile through three numeric dimensions; expects ordered x/y/z observations.",
+        "line_geo": "Show geographic routes or connections on a projected map; expects ordered latitude/longitude in degrees or recognised locations.",
+        "line_map": "Show geographic tracks or routes over a tile map; expects ordered latitude/longitude in degrees and optional groups.",
+        "line_polar": "Show directional or cyclic profiles; expects ordered angular positions, radial values and optional series.",
+        "line_ternary": "Show an ordered path through three-component compositions; expects three component values per observation in sequence.",
+        "parallel_categories": "Explore associations and combinations across several categorical dimensions; expects categorical columns for individual observations.",
+        "parallel_coordinates": "Explore multivariate profiles, clusters and unusual combinations; expects several numeric dimensions per observation.",
+        "pie": "Show parts of a whole, especially with a few categories; expects category labels and non-negative component values.",
+        "scatter": "Explore relationships, clusters and individual outliers between two numeric variables, including planar spatial coordinates; expects paired observations.",
+        "scatter_3d": "Explore relationships or spatial structure across three numeric dimensions; expects x/y/z observations with optional colour or size measures.",
+        "scatter_geo": "Show locations and geographic variation on a projected map; expects latitude/longitude in degrees or recognised geographic locations.",
+        "scatter_map": "Show locations and local geographic patterns on a tile map; expects latitude/longitude in degrees and optional colour or size measures.",
+        "scatter_matrix": "Explore pairwise relationships and outliers across several numeric variables; expects multiple numeric columns per observation.",
+        "scatter_polar": "Explore relationships between direction or cyclic position and magnitude; expects angular positions and radial values.",
+        "scatter_ternary": "Explore balance, clusters and outliers among three components; expects three non-negative component values per observation.",
+        "strip": "Compare individual observations across categories while retaining clusters and outliers; expects categories and numeric observations.",
+        "sunburst": "Explore hierarchical composition from root to leaves using concentric rings; expects hierarchy levels or parent/child identifiers and optional values.",
+        "timeline": "Compare event durations, overlaps and sequences; expects start/end dates and optional entity or category labels.",
+        "treemap": "Explore hierarchical composition using nested rectangle areas; expects hierarchy levels or parent/child identifiers and optional values.",
+        "violin": "Compare distribution shapes, modes and tails across groups; expects individual numeric observations and optional categories.",
+    }
+    return {
+        name: descriptions.get(name) or " ".join((inspect.getdoc(getattr(px, name)) or "").split("\n\n", 1)[0].split())
+        for name in plot_capabilities()
+    }
+
+
+def validate_plot_arguments(plot: PlottingPlan) -> None:
     supported = plot_capabilities().get(plot.function)
     if supported is None:
-        raise ValueError(f"Unsupported Plotly Express function: {plot.function}")
+        raise ValueError(f"Unsupported Plotly function: {plot.function}")
+    errors = []
     for argument in plot.columns:
         if argument not in supported["columns"]:
             hint = "; place presentation settings in options" if argument in supported["options"] else ""
-            raise ValueError(f"Unsupported plot column argument for {plot.function}: {argument}{hint}")
-    for argument in plot.options:
-        if argument not in supported["options"]:
-            raise ValueError(f"Unsupported plot presentation option for {plot.function}: {argument}")
+            errors.append(f"Unsupported plot column argument for {plot.function}: {argument}{hint}")
+    invalid_options = sorted(set(plot.options) - set(supported["options"]))
+    if invalid_options:
+        errors.append(f"Unsupported plot presentation option for {plot.function}: {', '.join(invalid_options)}")
+    if errors:
+        raise ValueError("; ".join(errors))
     validate_plot_template(plot.options)
 
 
@@ -108,7 +170,7 @@ def representation_selections(database: Path, spec: AnalysisSpec, result: Accept
     return selections
 
 
-def validate_plot_spec(plot: PlotSpec, result: AcceptedAnalysisResult,
+def validate_plot_spec(plot: PlottingPlan, result: AcceptedAnalysisResult,
                        selection: list[ResultFilter] | None = None) -> None:
     validate_plot_arguments(plot)
     if plot.filters != (selection or []):
@@ -127,6 +189,40 @@ def validate_plot_spec(plot: PlotSpec, result: AcceptedAnalysisResult,
             raise ValueError("Plot in filter needs values")
         if selection.operator == "is_null" and selection.values:
             raise ValueError("Plot is_null filter takes no values")
+
+
+def accepted_result_plot_schema(
+    result: AcceptedAnalysisResult,
+    selection: list[ResultFilter] | None = None,
+    *,
+    frame: pd.DataFrame,
+    title: str = "",
+) -> type[PlottingPlan]:
+    """Return contract and rendering errors to the existing SDK correction loop."""
+    exact_selection = [item.model_copy(deep=True) for item in (selection or [])]
+
+    class AcceptedResultPlottingPlan(PlottingPlan):
+        @model_validator(mode="after")
+        def accepted_result_contract(self):
+            validate_plot_candidate(frame, self, result, exact_selection, title)
+            return self
+
+    return AcceptedResultPlottingPlan
+
+
+def validate_plot_candidate(frame: pd.DataFrame, plot: PlottingPlan, result: AcceptedAnalysisResult,
+                            selection: list[ResultFilter], title: str):
+    """Use the real renderer, retaining concise errors for model correction."""
+    try:
+        validate_plot_spec(plot, result, selection)
+        figure = render_plot(frame, plot, title)
+        if not figure.data and not filter_frame(frame, plot.filters).empty:
+            raise ValueError("Renderer returned no traces for nonempty selected data")
+        return figure
+    except (ValueError, TypeError, KeyError, NotImplementedError) as exc:
+        detail = " ".join(str(exc).split())[:350]
+        hint = "Correct the encoding using the supported arguments and exact selection; retain the essential analytical comparisons."
+        raise PlotValidationError(f"{plot.function}: {detail}. {hint}") from exc
 
 
 def filter_frame(frame: pd.DataFrame, filters: list[ResultFilter]) -> pd.DataFrame:
@@ -149,10 +245,12 @@ def filter_frame(frame: pd.DataFrame, filters: list[ResultFilter]) -> pd.DataFra
     return frame
 
 
-def render_plot(frame: pd.DataFrame, plot: PlotSpec, title: str):
+def render_plot(frame: pd.DataFrame, plot: PlottingPlan, title: str):
     """Use only the executed DataFrame as Plotly's data source."""
     validate_plot_arguments(plot)
     frame = filter_frame(frame, plot.filters)
+    if plot.function in GRID_PLOTS:
+        return render_grid(frame, plot, title)
     if plot.function == "imshow":
         if plot.columns:
             raise ValueError("imshow uses the full DataFrame without column arguments")
@@ -172,3 +270,38 @@ def render_plot(frame: pd.DataFrame, plot: PlotSpec, title: str):
                 f"Plot references a missing result column: {argument}={value}"
             )
     return function(frame, title=title, **plot.columns, **plot.options)
+
+
+def render_grid(frame: pd.DataFrame, plot: PlottingPlan, title: str):
+    """Reshape explicitly mapped cell values; never choose or compute their meaning."""
+    if set(plot.columns) != {"x", "y", "z"} or any(not isinstance(v, str) for v in plot.columns.values()):
+        raise ValueError(f"{plot.function} requires one exact field each for x, y and z")
+    x, y, z = (plot.columns[key] for key in ("x", "y", "z"))
+    if len({x, y, z}) != 3:
+        raise ValueError(f"{plot.function} requires distinct x, y and z fields")
+    if frame[[x, y]].isna().any().any():
+        raise ValueError("Grid coordinates must be present; missing locations cannot identify cells")
+    if frame.duplicated([x, y]).any():
+        raise ValueError("Grid coordinates are duplicated; Analysis must return one value per cell. No aggregation is performed.")
+    if not pd.api.types.is_numeric_dtype(frame[z]):
+        raise ValueError("Grid z values must be numeric")
+    if frame[[x, y, z]].isin([float("inf"), float("-inf")]).any().any():
+        raise ValueError("Grid coordinates and values cannot be infinite")
+    # Pivot performs no aggregation. Preserve first-seen category order for heatmaps.
+    grid = frame.pivot(index=y, columns=x, values=z)
+    if plot.function == "heatmap":
+        grid = grid.reindex(index=frame[y].drop_duplicates(), columns=frame[x].drop_duplicates())
+    else:
+        if not all(pd.api.types.is_numeric_dtype(frame[field]) for field in (x, y)):
+            raise ValueError("Contour grid coordinates must be numeric")
+        valid = grid.notna().to_numpy()
+        if min(valid.shape) < 2 or not (
+            valid[:-1, :-1] & valid[1:, :-1] & valid[:-1, 1:] & valid[1:, 1:]
+        ).any():
+            raise ValueError("Contour has no complete adjacent grid cell. Analysis must supply surface grid values; scattered observations cannot be interpolated by Plotting.")
+    layout_options = {k: v for k, v in plot.options.items() if k in {"width", "height", "template"}}
+    trace_options = {k: v for k, v in plot.options.items() if k not in layout_options}
+    figure = go.Figure(GRID_PLOTS[plot.function](x=grid.columns.tolist(), y=grid.index.tolist(),
+        z=grid.to_numpy(), connectgaps=False, colorbar={"title": z}, **trace_options))
+    figure.update_layout(title=title, xaxis_title=x, yaxis_title=y, **layout_options)
+    return figure

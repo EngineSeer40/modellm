@@ -40,7 +40,7 @@ def load_raw(database: Path, paths: list[Path]) -> list[str]:
             )
             rows = con.execute(f'SELECT count(*) FROM raw."{name}"').fetchone()[0]
             columns = len(con.execute(f'DESCRIBE raw."{name}"').fetchall())
-            check_limit(rows, settings.max_source_rows, "Source rows")
+            check_limit(rows, settings.max_source_rows, f"Rows in {path.name}")
             check_limit(columns, settings.max_source_columns, "Source columns")
             if suffix in {".json", ".jsonl", ".ndjson"}:
                 fields = con.execute(f'DESCRIBE raw."{name}"').fetchall()

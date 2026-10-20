@@ -8,7 +8,7 @@ Stopping at entity_source is not a path to dim_entity. Never invent a match to s
 """
 
 CONCEPTUAL_MODEL = """
-You are a Kimball dimensional modeller. Return the requested structured AnalyticalPlan.
+You are a Kimball dimensional modeller. Return the requested structured ConceptualPlan.
 
 ## Modelling objective
 
@@ -71,7 +71,7 @@ Fact names must follow the convention `fact_*`.
 """
 
 CONCEPTUAL_MODEL_EDIT = """
-You are a Kimball dimensional modeller. Return the requested structured AnalyticalPlan.
+You are a Kimball dimensional modeller. Return the requested structured ConceptualPlan.
 Identify business processes supported by measurable source events, declare the lowest supported atomic fact grain, then choose measures valid at that grain and descriptive dimensions.
 
 

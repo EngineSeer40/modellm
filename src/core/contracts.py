@@ -189,7 +189,7 @@ class FactPlan(Contract):
     )
 
 
-class AnalyticalPlan(Contract):
+class ConceptualPlan(Contract):
     business_processes: list[BusinessProcessPlan]
     dimensions: list[DimensionPlan]
     facts: list[FactPlan]
@@ -208,7 +208,7 @@ class DbtFile(Contract):
     content: str
 
 
-class DbtImplementation(Contract):
+class DimensionalPlan(Contract):
     files: list[DbtFile] = Field(description="Distinct flat paths: exactly the planned SQL models and one schema.yml; no sources declarations")
     explanation: str = Field(description="Implementation, limitations and actual repairs of the accepted plan; introduces no new business, relationship or cardinality assumptions")
 
@@ -227,7 +227,7 @@ class AnalysisDimension(Contract):
     semantic_type: Literal[
         "temporal", "categorical", "ordinal", "geographic", "identifier", "other"
     ]
-    description: str
+    description: str = Field(description="Meaning of this returned column, including known units, coordinate reference system, bin boundaries or time grain where relevant. Define the data; leave visual channel decisions to Plotting.")
 
 
 class RatioComponents(Contract):
@@ -248,7 +248,7 @@ class AnalysisMeasure(Contract):
         "numeric",
         "other",
     ]
-    description: str
+    description: str = Field(description="Quantity represented by this returned column, its known unit and calculation basis, such as a total, average, count or rate. Define the quantity rather than a visual channel; visualisation_goal distinguishes essential comparisons from supporting context.")
     additivity: Literal["additive", "semi_additive", "non_additive"]
     components: RatioComponents | None = None
 
@@ -284,34 +284,33 @@ class QueryDefinition(Contract):
 
 
 class AnalysisSpec(Contract):
-    title: str
-    question: str
+    title: str = Field(description="Display name for this analytical result; do not promise a chart type or transformation the result cannot support")
+    question: str = Field(description="Specific analytical question answered by this result, distinct from the broader original request")
     query: QueryDefinition
     concept_id: str = Field(
-        min_length=1, description="Groups related views of one analytical concept"
+        min_length=1, description="Groups related analyses of one concept in the dashboard; does not itself create figures"
     )
-    population_definition: str = Field(min_length=1, description="Actual output population, filters and denominator policy for this view; distinguish it from the base qualification when applicable")
-    observation_rule: str | None = Field(description="Actual request-specific observation rule applied in this view; explicitly null only when no additional rule applies")
+    population_definition: str = Field(min_length=1, description="Who or what is included after qualification and query filters, including denominator scope where relevant")
+    observation_rule: str | None = Field(description="Quality, calculation or grouping rules actually applied to observations beyond the stated population and row grain; null when none. Describe data treatment, not chart choices or renderer-capability claims.")
     variant_field: str | None = Field(
         default=None,
-        description="Exact result column distinguishing alternate representations of the same concept within one result; null otherwise. Ordinary grouping categories, dates or months are not selectors merely because their values vary.",
+        description="Exact result column whose values identify alternate views. Each distinct value, including a null-valued group, creates a separate figure from matching rows. Selects rows, not measure columns or individual readings. Leave variant_field null to render the result once.",
     )
-    rationale: str = Field(description="Why these transformations answer the question")
+    rationale: str = Field(description="Why the SQL method, preparation and chosen observation grain answer the question, with evidence for methodological choices and limitations. Explain the analysis rather than prescribing visual channels, asserting outcomes or inventing renderer restrictions.")
     grain: str = Field(description="What one result row represents")
     dimensions: list[AnalysisDimension]
     measures: list[AnalysisMeasure]
     visualisation_goal: str = Field(
-        description="Comparison, relationship or pattern the result should communicate; no chart types, traces, axes or overlay instructions"
+        description="Essential comparisons, relationships or patterns from the original request that a reader should assess using the returned rows, distinguished from supporting context. State evidence-based data limitations and any unmet requirement. Leave visual channels to Plotting; do not replace the requested purpose with a fallback, promise uncomputed transformations or assert outcomes."
     )
 
-
-class AnalysisPlan(Contract):
+class AnalyticalPlan(Contract):
     analyses: list[AnalysisSpec] = Field(min_length=1)
     qualifications: list[SharedQualification] = Field(
         description="Shared populations used by qualified queries; otherwise an empty list"
     )
     warnings: list[str] = Field(
-        description="Analytical assumptions/limitations, or an empty list"
+        description="User-facing analytical assumptions and remaining limitations; not instructions to Plotting. Empty list if none"
     )
 
 
@@ -407,7 +406,7 @@ class FindingCell(Contract):
 class FindingStatement(Contract):
     template: str = Field(
         min_length=1,
-        description="Outcome text with simple {placeholders}. Bind observed values/dates/labels to evidence; constants from the supplied analytical definition may appear in prose. Evidence must match the claimed population: a subgroup row is not an overall total.",
+        description="Outcome text with simple {placeholders}. Bind observed values/dates/labels to evidence; comparisons bind relevant endpoints and labels. Quantitative changes/factors, including verbal multipliers, require returned evidence, not arithmetic invented in prose. Supplied methodology constants may appear in prose. Evidence must match the claimed population: a subgroup row is not an overall total.",
     )
     selected_rows: dict[str, EvidenceRowRef] = Field(
         description="Alias to stored evidence row. Every selected alias must be used by at least one binding in this statement; do not include unused context rows. Bind relevant labels and values for each cited row.",
@@ -420,7 +419,7 @@ class FindingStatement(Contract):
 class AnalysisFinding(Contract):
     statements: list[FindingStatement] = Field(min_length=1)
     caveats: list[str] = Field(
-        description="Limitations and supplied methodology only; no new unbound observed numerical claims, populations or business calculations. Report observed values through bound statements. Empty list if none."
+        description="Residual limitations and supplied methodology after selecting valid claims; never an excuse for a false statement. No new unbound observed numerical claims, populations or business calculations. Report observed values through bound statements. Empty list if none."
     )
 
 
@@ -504,16 +503,16 @@ def validate_plot_template(options: dict) -> None:
         )
 
 
-class PlotSpec(Contract):
-    function: str = Field(description="One Plotly Express function supported by the supplied renderer_capabilities")
+class PlottingPlan(Contract):
+    function: str = Field(description="One Plotly function listed in available_plots whose operation and required data shape fit the accepted result")
     columns: dict[str, Any] = Field(
-        description="Supported column argument from renderer_capabilities to an exact accepted field name, or a supported list of exact names; no data arrays or presentation settings"
+        description="Column arguments for the chosen Plotly function, mapped to exact accepted field names or supported lists of names. Native heatmap/contour use x/y/z fields for already-calculated grid cells. No data arrays or presentation settings."
     )
     filters: list[ResultFilter] = Field(
         description="Exactly the supplied presentation_selection, with no additional population filters; empty list when none is supplied"
     )
     options: dict[str, Any] = Field(
-        description="Supported presentation options from renderer_capabilities, such as orientation=h; template must be a registered name from renderer_templates. Never field references or data arrays. Empty object if none."
+        description="Scalar presentation options listed for the chosen function in available_plot_arguments; template must be a registered name from renderer_templates. Never field references or data arrays. Empty object if none."
     )
 
     @model_validator(mode="after")

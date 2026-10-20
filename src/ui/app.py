@@ -170,6 +170,18 @@ def render_run(state: RunState | None, *, saved=False):
                     accept_multiple_files=True, key=uploader_key, disabled=busy,
                     label_visibility="collapsed",
                 )
+        limits = manager.settings
+        row_limit = (f"{limits.max_source_rows:,} rows per file" if limits.max_source_rows is not None
+                     else "No configured row limit")
+        upload_limits = [row_limit]
+        if limits.max_source_columns is not None:
+            upload_limits.append(f"{limits.max_source_columns:,} columns per file")
+        if limits.max_file_bytes is not None:
+            upload_limits.append(f"{limits.max_file_bytes / 1024**2:g} MB per file")
+        if limits.max_upload_bytes is not None:
+            upload_limits.append(f"{limits.max_upload_bytes / 1024**2:g} MB total")
+        st.caption("Upload limits: " + " · ".join(upload_limits) +
+                   ". Row limits are checked during loading; oversized files are rejected, never sampled.")
         _populate_demo_uploads(uploader_key)
         uploads = [(file.name, file.getvalue()) for file in files]
         request = st.text_area(

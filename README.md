@@ -170,6 +170,28 @@ The main code boundaries are:
 
 Run state remains a dictionary on disk. `RunRecord` owns saving and events without changing existing JSON keys, status values or artifacts. Stateless policy checks remain functions, and repair loops stay with their stages.
 
-[src/telemetry.py](src/telemetry.py) adds workflow and stage/attempt spans around native Strands tracing, with run and model-call correlation. Without a configured OpenTelemetry provider, tracing is a no-op. No cloud exporter or Langfuse credentials are configured by the application. A future exporter should initialise once in the worker process and use its bounded flush on normal exit; forced termination can lose final spans. Saved-dashboard mode starts no workflow traces. Cloud export and prompt/tool-content capture require a separate configuration step.
+[src/telemetry.py](src/telemetry.py) adds workflow and stage/attempt spans around native Strands tracing, with run and model-call correlation. Optional Langfuse export initialises once in the worker and reuses the existing trace ID. Recording is off by default, independently of production mode.
+
+### Optional Langfuse Cloud traces
+
+Create a Langfuse Cloud project and a key pair in **Settings → API Keys**. Add the following to your private `.env`, using the base URL for your project's region (the example is EU Cloud):
+
+```dotenv
+MODELLM_LANGFUSE_ENABLED=true
+MODELLM_LANGFUSE_PUBLIC=false
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=pk-lf-REPLACE_LOCALLY
+LANGFUSE_SECRET_KEY=sk-lf-REPLACE_LOCALLY
+```
+
+Restart with the existing `uv run --env-file .env --frozen streamlit run app.py` command and start a run. Results shows **View Langfuse Observability Trace ↗** when a URL is available, including for failed runs. Sign in to Langfuse with project access to investigate private traces. The keys authenticate server-side recording; they are never part of the dashboard link.
+
+Native traces include model messages, system instructions, tool arguments/results, reported usage and stage/attempt errors, plus the question and a small outcome summary. Run artifacts and databases are not uploaded. Existing application cost accounting remains authoritative; Langfuse's pricing display may differ.
+
+For a public CV demo, set `MODELLM_LANGFUSE_PUBLIC=true` before starting a run using suitable demo data. Anyone with its link can then view the **whole captured trace** without login. There is no separately sanitised public view. Turning public mode off affects future runs and does not revoke existing public traces.
+
+For ECS, store the key pair in Secrets Manager and supply the optional `LangfuseSecretArn`, `LangfuseBaseUrl` and `LangfusePublic` parameters through the existing `CFN_PARAMETERS`. See [the deployment runbook](todo/20261015_first_release_deployment_runbook.md#optional-langfuse-cloud-recording). No new GitHub credentials or roles are required.
+
+Set `MODELLM_LANGFUSE_ENABLED=false` locally, or clear `LangfuseSecretArn` in ECS, to disable recording. Missing configuration and export failures do not fail a model run; warnings go to worker stderr/CloudWatch. Normal exit requests a best-effort flush with a short HTTP timeout. The SDK may ignore the flush timeout, and forced termination can leave a partial trace. A generated URL does not guarantee ingestion has completed. Saved-dashboard mode uses any saved URL without exporting another trace.
 
 Analysis executes against validated dbt models; findings cite registered evidence from accepted results. Plotting reads accepted results and does not choose a new business aggregation. Successful execution and passing dbt tests do not establish business correctness: review the assumptions, methodology and data-quality warnings for each run.

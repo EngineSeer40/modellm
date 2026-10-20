@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from importlib.metadata import version
 from pathlib import Path
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from opentelemetry.util.types import AttributeValue
 
@@ -17,6 +17,10 @@ from .execution import current_budget
 from .context_cost import COST_EXPERIMENT_STAGES, configured_cost_experiments, tool_result_offload_plugins
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class InvocationLimitError(RuntimeError):
+    """The SDK exhausted a local invocation limit, not the shared run budget."""
 
 
 def configured_model_id(stage: str | None = None) -> str:
@@ -48,7 +52,18 @@ async def _invoke(
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
     context_directory: Path | None = None,
+    limits: dict[str, int] | None = None,
+    cache_policy: Literal["default", "disabled"] = "default",
 ) -> T:
+    if cache_policy not in {"default", "disabled"}:
+        raise ValueError(f"Unknown cache policy: {cache_policy}")
+    def explicit_checkpoint(value):
+        if isinstance(value, dict):
+            return "cachePoint" in value or any(explicit_checkpoint(item) for item in value.values())
+        return isinstance(value, list) and any(explicit_checkpoint(item) for item in value)
+
+    if cache_policy == "disabled" and explicit_checkpoint(prompt):
+        raise ValueError("Disabled cache policy cannot receive explicit cache checkpoints")
     from botocore.config import Config
     from strands import Agent
     from strands.models import BedrockModel, CacheConfig
@@ -59,7 +74,7 @@ async def _invoke(
     sonnet_55 = "anthropic.claude-sonnet-5-5" in model_id
     sonnet_5 = model_id.split("anthropic.")[-1] in {"claude-sonnet-5", "claude-sonnet-5-5"}
     nova_reasoning = "amazon.nova-2-lite" in model_id
-    cache_enabled = (stage in {
+    cache_enabled = cache_policy != "disabled" and (stage in {
         "analytical interpretation", "generating dbt models",
         "analytical finding", "visualisation generation",
     } or stage == "conceptual modelling" and "conceptual_cache" in experiments) and (
@@ -99,6 +114,8 @@ async def _invoke(
         "cost_experiments": sorted(name for name in experiments if COST_EXPERIMENT_STAGES[name] == stage),
         "strands_version": version("strands-agents"),
         "context_directory": str(offload_directory) if plugins else None,
+        "limits": limits,
+        "cache_policy": cache_policy,
     }
     emit(stage, "model_call", f"Calling {model_id}", {
         "call_id": call_id, "model_id": model_id, "status": "started",
@@ -132,7 +149,8 @@ async def _invoke(
         last_flush = time.monotonic()
 
     try:
-        async for event in agent.stream_async(prompt, structured_output_model=schema):
+        async for event in agent.stream_async(prompt, structured_output_model=schema,
+                                            **({"limits": limits} if limits is not None else {})):
             if event.get("reasoningText"):
                 streamed["reasoning"] += event["reasoningText"]
                 reasoning_seen = True
@@ -186,6 +204,14 @@ async def _invoke(
               "status": "failed", "tool_calls": len(seen_tools)})
         raise
     flush_stream()
+    if final is not None and str(getattr(final, "stop_reason", "")).startswith("limit_"):
+        error = f"{stage} exhausted its local invocation limit: {final.stop_reason} ({limits})"
+        emit(stage, "model_failure", error, {
+            "call_id": call_id, "model_id": model_id, "category": "invocation_limit",
+            "status": "failed", "limits": limits,
+            "elapsed_seconds": time.monotonic() - started, "tool_calls": len(seen_tools),
+        })
+        raise InvocationLimitError(error)
     if final is None or final.structured_output is None:
         error = f"{stage} returned no structured output"
         emit(stage, "model_failure", error, {
@@ -220,6 +246,9 @@ def invoke(
     cost_experiments: frozenset[str] | None = None,
     trace_attributes: Mapping[str, AttributeValue] | None = None,
     context_directory: Path | None = None,
+    limits: dict[str, int] | None = None,
+    cache_policy: Literal["default", "disabled"] = "default",
 ) -> T:
     return asyncio.run(_invoke(prompt, schema, stage, emit, system_prompt, tools,
-                              cost_experiments=cost_experiments, context_directory=context_directory, trace_attributes=trace_attributes))
+                              cost_experiments=cost_experiments, context_directory=context_directory,
+                              trace_attributes=trace_attributes, limits=limits, cache_policy=cache_policy))

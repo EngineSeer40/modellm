@@ -22,6 +22,10 @@ from .usage import estimate_usage_cost, summarize_usage
 from .workspace import RunWorkspace, atomic_json, validate_submission
 
 
+class RunBudgetExceededError(RuntimeError):
+    """Further model calls are prohibited by the shared run budget."""
+
+
 class RunBudget:
     """One budget across stages, repairs and SDK model cycles; no prompt editing."""
     def __init__(self, settings):
@@ -35,17 +39,20 @@ class RunBudget:
         limit = self.settings.run_seconds
         remaining = limit - (time.monotonic() - self.started) if limit else None
         if remaining is not None and remaining <= 0:
-            raise RuntimeError("Workflow deadline exceeded")
+            raise RunBudgetExceededError("Workflow deadline exceeded")
         return remaining
 
     def before_model(self):
         self.remaining_seconds()
-        check_limit(self.calls + 1, self.settings.max_model_calls, "Internal model calls")
+        try:
+            check_limit(self.calls + 1, self.settings.max_model_calls, "Internal model calls")
+        except ValueError as exc:
+            raise RunBudgetExceededError(str(exc)) from exc
         if self.settings.max_cost_usd is not None:
             if self.usage_unknown:
-                raise RuntimeError("Cannot continue: provider usage or pricing unavailable")
+                raise RunBudgetExceededError("Cannot continue: provider usage or pricing unavailable")
             if self.cost >= self.settings.max_cost_usd:
-                raise RuntimeError("Reported model cost budget exhausted")
+                raise RunBudgetExceededError("Reported model cost budget exhausted")
         self.calls += 1
 
     def record_response(self, message, model, region):
@@ -211,7 +218,7 @@ class RunManager:
             env = {key: value for key, value in os.environ.items() if key != "MODELLM_LIVE_ACCESS_CODE"}
             process = subprocess.Popen([sys.executable, "-m", "src.worker", "--run-dir", str(workspace.run_dir)],
                                        env=env, cwd=Path(__file__).resolve().parents[1], start_new_session=True,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                       stdout=subprocess.DEVNULL, stderr=None)
             with self.lock:
                 self.process = process
             deadline = time.monotonic() + self.settings.run_seconds if self.settings.run_seconds else None
