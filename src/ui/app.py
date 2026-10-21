@@ -11,12 +11,14 @@ from pathlib import Path
 import streamlit as st
 
 from samples.sample_questions import (
-    SAMPLE_CHURN, SAMPLE_CHURN_FILES, SAMPLE_SURVEY, SAMPLE_SURVEY_FILES,
+    SAMPLE_CHURN,
+    SAMPLE_CHURN_FILES,
+    SAMPLE_SURVEY,
+    SAMPLE_SURVEY_FILES,
 )
-
-from src.run import RunState
 from src.config import ReleaseSettings
 from src.execution import RunManager
+from src.run import RunState
 
 from .live import render_stage_progress, render_stream, render_timeline
 from .saved_run import load_saved_run
@@ -52,10 +54,8 @@ def _live_access(settings):
     if len(expected) < 8:
         st.info("Live access is not configured.")
         return False
-    with st.form("preview_access"):
-        code = st.text_input("Access code", type="password")
-        submitted = st.form_submit_button("Unlock live runs")
-    if submitted and time.time() >= st.session_state.get("_access_retry_at", 0):
+    code = st.text_input("Access code", type="password")
+    if code and time.time() >= st.session_state.get("_access_retry_at", 0):
         if hmac.compare_digest(code.encode(), expected.encode()):
             st.session_state["_preview_access"] = True
             st.rerun()
@@ -108,12 +108,15 @@ def _populate_demo_uploads(uploader_key):
     uploads = st.session_state.pop("_pending_demo_uploads", None)
     if uploads is None:
         return
-    payload = json.dumps([
-        {"name": name, "data": base64.b64encode(data).decode("ascii")}
-        for name, data in uploads.items()
-    ]).replace("<", "\\u003c")
+    payload = json.dumps(
+        [
+            {"name": name, "data": base64.b64encode(data).decode("ascii")}
+            for name, data in uploads.items()
+        ]
+    ).replace("<", "\\u003c")
     # Only our explicit bundled sample files are embedded in executable HTML.
-    st.html(f'''<script>
+    st.html(
+        f"""<script>
       (async () => {{
         const selector = '.st-key-{uploader_key} input[type="file"]';
         let input;
@@ -133,7 +136,9 @@ def _populate_demo_uploads(uploader_key):
         input.files = transfer.files;
         input.dispatchEvent(new Event('change', {{bubbles: true}}));
       }})();
-    </script>''', unsafe_allow_javascript=True)
+    </script>""",
+        unsafe_allow_javascript=True,
+    )
 
 
 def render_run(state: RunState | None, *, saved=False):
@@ -170,19 +175,32 @@ def render_run(state: RunState | None, *, saved=False):
         with st.container(gap="xxsmall", key="dataset_picker"):
             st.markdown("Related datasets")
             with st.container(horizontal=True, gap=None, vertical_alignment="bottom"):
-                with st.container(horizontal=True, gap="xxsmall", width="content", key="demo_picker"):
+                with st.container(
+                    horizontal=True, gap="xxsmall", width="content", key="demo_picker"
+                ):
                     for demo in DEMO_DATASETS:
-                        st.button(f"Add {demo.title()} Demo", key=f"insert_{demo}_demo",
-                                  on_click=_insert_demo_data, args=(demo,), disabled=busy, wrap=True)
+                        st.button(
+                            f"Add {demo.title()} Demo",
+                            key=f"insert_{demo}_demo",
+                            on_click=_insert_demo_data,
+                            args=(demo,),
+                            disabled=busy,
+                            wrap=True,
+                        )
                 files = st.file_uploader(
                     "Related datasets",
                     type=["csv", "parquet", "json", "jsonl", "ndjson"],
-                    accept_multiple_files=True, key=uploader_key, disabled=busy,
+                    accept_multiple_files=True,
+                    key=uploader_key,
+                    disabled=busy,
                     label_visibility="collapsed",
                 )
         limits = manager.settings
-        row_limit = (f"{limits.max_source_rows:,} rows per file" if limits.max_source_rows is not None
-                     else "No configured row limit")
+        row_limit = (
+            f"{limits.max_source_rows:,} rows per file"
+            if limits.max_source_rows is not None
+            else "No configured row limit"
+        )
         upload_limits = [row_limit]
         if limits.max_source_columns is not None:
             upload_limits.append(f"{limits.max_source_columns:,} columns per file")
@@ -190,8 +208,11 @@ def render_run(state: RunState | None, *, saved=False):
             upload_limits.append(f"{limits.max_file_bytes / 1024**2:g} MB per file")
         if limits.max_upload_bytes is not None:
             upload_limits.append(f"{limits.max_upload_bytes / 1024**2:g} MB total")
-        st.caption("Upload limits: " + " · ".join(upload_limits) +
-                   ". Row limits are checked during loading; oversized files are rejected, never sampled.")
+        st.caption(
+            "Upload limits: "
+            + " · ".join(upload_limits)
+            + ". Row limits are checked during loading; oversized files are rejected, never sampled."
+        )
         _populate_demo_uploads(uploader_key)
         uploads = [(file.name, file.getvalue()) for file in files]
         request = st.text_area(
@@ -359,9 +380,11 @@ def render_app(*, saved_run=None):
         </a>
     """)
     st.title("ModeL:primary[LM]")
-    st.header("Language driven data modeller & visualisation agent")
+    st.header("Language driven data modelling & visualisation agent")
     if saved_run is not None:
-        st.caption(f"Saved run: {st.session_state['result']['run_id']} · Model execution disabled")
+        st.caption(
+            f"Saved run: {st.session_state['result']['run_id']} · Model execution disabled"
+        )
     pending = st.session_state.pop("_next_surface", None)
     if pending:
         st.session_state["ui_surface"] = pending
