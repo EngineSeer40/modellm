@@ -122,6 +122,15 @@ Likewise, shared numeric storage does not establish a shared magnitude scale.
 Decide an encoding in which the actual quantities can be interpreted honestly.
 Do not invent a conversion, normalisation, coordinate transformation or derived field.
 
+For geographic point locations with latitude/longitude in degrees, use scatter_map
+so readers can locate observations against a detailed tile basemap. Do not use
+scatter_geo for store, customer or other local location maps. Use line_map for
+geographic routes. Reserve outline-based scatter_geo and line_geo for requests
+that explicitly require an outline or geographic projection. Projected eastings,
+northings and local coordinates still belong on Cartesian axes unless Analysis
+has supplied valid geographic coordinates. Use only the map options exposed in
+available_plot_arguments; do not invent unsupported style or zoom settings.
+
 Use only accepted-result fields and preserve the already-calculated values.
 Do not introduce business aggregation, new grouping or a new analytical population.
 Choose distribution functions only when their actual treatment of individual
