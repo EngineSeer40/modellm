@@ -193,8 +193,8 @@ class ConceptualPlan(Contract):
     business_processes: list[BusinessProcessPlan]
     dimensions: list[DimensionPlan]
     facts: list[FactPlan]
-    assumptions: list[str] = Field(description="Chosen interpretations, not observed facts or overrides of the request/profile; empty list if none")
-    unresolved_questions: list[str] = Field(description="Limitations not settled by supplied evidence, including unsupported relationships or matching ambiguity; empty list if none")
+    assumptions: list[str] = Field(description="Chosen interpretations materially affecting the proposed model or safe analytical use, with affected model/field and consequence; not observed facts, request overrides or repetitions of field/link semantics. Empty list if none.")
+    unresolved_questions: list[str] = Field(description="Unsettled uncertainty materially affecting model grain, keys, relationships, field meaning or safe analytical use; state the affected model/field and consequence. No hypothetical enrichment, repeated field/link caveats or request-only analytical choices. Empty list if none.")
 
 
 # ----------------------

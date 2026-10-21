@@ -128,10 +128,25 @@ def analyse(
     small_previews = "small_analysis_previews" in experiments
     settings = current_settings()
 
+    # Select existing fields; do not classify prose or reinterpret model meaning.
+    # Built-model dependencies can explain a derived field even after dbt build.
+    semantic_plan = plan.model_dump(exclude={
+        "dimensions": {"__all__": {"source_datasets"}},
+        "facts": {"__all__": {
+            "source_datasets": True,
+            "dimension_links": {"__all__": {"source_paths"}},
+        }},
+    })
+    for model in semantic_plan["dimensions"] + semantic_plan["facts"]:
+        for field in model["output_fields"]:
+            field["definition"]["inputs"] = [
+                ref for ref in field["definition"]["inputs"] if ref["kind"] == "model"
+            ]
+
     prompt = split_stable_and_repair_context(
         {
             "request": request,
-            "conceptual_plan": plan.model_dump(),
+            "conceptual_plan": semantic_plan,
             "validated_schemas": model_schemas,
             "model_summaries": summaries,
             "available_plots": plot_descriptions(),

@@ -13,11 +13,21 @@ Do not assume the request is a conventional metric or chart. It may require dist
 ## Analysis and evidence
 
 Work backwards from what the request needs to compare or understand.
-Use the supplied conceptual plan, validated schemas, model summaries and the supplied available_plots. 
+Use the supplied conceptual_plan (a semantic subset of the accepted model plan), validated_schemas for exact built columns/types, model_summaries for observed previews/counts, and available_plots.
+Raw source mappings and construction match paths are omitted after dbt materialisation. Retained definitions explain built-field transformations, not work to repeat; modelling rationale explains model design, not an analytical task list. Model validation checks interfaces and declared keys; it does not prove business meaning or analytical correctness.
+Read assumptions and unresolved_questions for their consequence to this request, not as an investigation checklist. Preserve material population and interpretation limitations; investigate only when resolving one could change a required analytical decision. A caveat about an unused source or unavailable enrichment does not itself require inspection. Counts cannot establish an unavailable business definition or explain why records are unmatched.
 Query the data when an unresolved property prevents a defensible choice of population, joins, calculation, denominator, grain, result shape or feasibility.
 Do not continue exploring alternative formulations once the requested analysis is sufficiently grounded and internally consistent unless a concrete unresolved dependency remains.
+
+Resolve underspecified analytical details with the minimum necessary defensible interpretation consistent with the request and evidence.
+Do not expand the task into additional metrics, denominators, cohorts or alternative formulations unless they are required to answer the request.
+
+Once a defensible interpretation is supported by the request and available evidence, treat unexpected results as a reason to verify the implementation and supporting evidence. 
+Unexpected magnitude alone is not a reason to redefine the analytical question. Reconsider the interpretation when new evidence shows it is inconsistent, unsupported or unable to answer the request.
+
 Do not infer business rules from counts alone or invent source meaning. 
 Where available evidence does not determine a necessary choice, make a reasonable analytical assumption explicit or record the unresolved limitation rather than repeatedly investigating equivalent alternatives.
+Label any adopted business definition as an assumption; do not call it standard, authoritative or source-defined without supplied evidence. SQL inspection cannot recover a missing business specification.
 Previews and diagnostics establish only the properties of the values and transformations they actually inspect. Evidence from binned, rounded, grouped, aligned or otherwise transformed values does not establish the same property for the original values unless that transformation is carried into the final result.
 
 Once the required population, calculations, denominators, grain and result shape are supported well enough to answer the request consistently, stop inspecting and produce the analytical plan.
