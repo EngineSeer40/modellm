@@ -50,7 +50,7 @@ uv run --env-file .env --frozen streamlit run app.py \
 
 ### 4. Run an analysis
 
-In **Run**, upload **2–6 related datasets** and describe what you want to understand. Alternatively, select **Insert Demo Data** to load the bundled `SAMPLE_1` files and question from [samples/](samples/). You can edit the question and remove files before submission. Inserting demo data does not invoke a model; **Start Modelling** does.
+In **Run**, upload **2–6 related datasets** and describe what you want to understand. Alternatively, select **Add Survey Demo** or **Add Churn Demo** to load the matching files from [samples/](samples/) and question from [sample_questions.py](samples/sample_questions.py). Each selection replaces the previous files and question. You can edit the question and remove files before submission. Inserting demo data does not invoke a model; **Start Modelling** does.
 
 Supported formats are CSV, Parquet, JSON, JSON Lines and NDJSON. JSON can contain an array of records, one record object, or newline-delimited records. Nested fields remain nested DuckDB columns. A wrapper such as `{"data": [...]}` is rejected; upload the inner array instead.
 

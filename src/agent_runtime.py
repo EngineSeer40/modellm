@@ -108,7 +108,8 @@ async def _invoke(
     plugins = tool_result_offload_plugins(stage, experiments, offload_directory)
     agent = Agent(name=stage, trace_attributes={**(trace_attributes or {}),
                   "modellm.call_id": call_id, "modellm.stage": stage}, model=model, system_prompt=system_prompt, tools=tools or [], callback_handler=None,
-                  **({"hooks": [budget.hooks(model_id, settings.region)]} if budget else {}),
+                  **({"hooks": [budget.hooks(model_id, settings.region,
+                                            allow_unknown_usage=stage == "visualisation generation")]} if budget else {}),
                   **({"plugins": plugins} if plugins else {}))
     call_context = {
         "cost_experiments": sorted(name for name in experiments if COST_EXPERIMENT_STAGES[name] == stage),

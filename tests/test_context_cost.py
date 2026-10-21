@@ -120,6 +120,73 @@ def test_small_preview_keeps_explicit_limits_and_complete_acceptance(tmp_path, a
     assert accepted[0][1].row_count == 620
 
 
+@pytest.mark.parametrize("policy", ["null", "unknown_member", "exclude"])
+def test_analysis_handoff_preserves_semantics_without_dbt_lineage(monkeypatch, tmp_path, policy):
+    from test_execution_contracts import source_plan
+    from src.core.contracts import FieldDefinition, FieldRef, ModelOutput
+
+    plan = source_plan()
+    plan.assumptions = ["Registry identity is stable; history is unavailable"]
+    plan.unresolved_questions = ["Observation timestamps have no known timezone"]
+    link = plan.facts[0].dimension_links[0]
+    link.unmatched_policy = policy
+    link.unmatched_explanation = "Unmatched observations affect the identifiable population"
+    # Saved plans may carry essential transformation meaning only in explanation.
+    plan.facts[0].output_fields.append(ModelOutput(
+        name="signed_mass", description="Mass in grams", additivity="additive",
+        definition=FieldDefinition(kind="derive", inputs=[
+            FieldRef(kind="source", dataset="field_notes", column="mass")
+        ], explanation="Negate removal measurements; leave missing values null"),
+    ))
+    plan.facts[0].output_fields.append(ModelOutput(
+        name="mass_in_kg", description="Mass in kilograms", additivity="additive",
+        definition=FieldDefinition(kind="derive", inputs=[
+            FieldRef(kind="model", model="fact_observations", column="signed_mass"),
+            FieldRef(kind="source", dataset="field_notes", column="unit_scale"),
+        ], explanation="Divide the signed mass by the source unit scale"),
+    ))
+    original = plan.model_dump()
+    captured = []
+    monkeypatch.setattr(agents, "invoke", lambda *args, **kw: captured.append(args))
+    schemas = {"fact_observations": {"signed_mass": "DOUBLE"}}
+    summaries = {"fact_observations": {"rows": 12, "preview": [{"signed_mass": -2}]}}
+    agents.implement(plan, {}, [], lambda *a: None)
+    assert json.loads(captured[-1][0][0]["text"])["plan"] == original
+    agents.analyse("Compare mass", plan, schemas, summaries, lambda *a: None,
+                   tmp_path / "models.duckdb")
+    payload = json.loads(captured[-1][0][0]["text"])
+    semantic = payload["conceptual_plan"]
+    assert payload["validated_schemas"] == schemas
+    assert payload["model_summaries"] == summaries
+    for key in ("business_processes", "assumptions", "unresolved_questions"):
+        assert semantic[key] == original[key]
+    dimension = semantic["dimensions"][0]
+    for key in ("name", "business_entity", "grain", "natural_key_fields", "surrogate_key", "grain_key_fields"):
+        assert dimension[key] == original["dimensions"][0][key]
+    fact = semantic["facts"][0]
+    for key in ("name", "business_process", "fact_type", "grain", "grain_key_fields", "modelling_rationale"):
+        assert fact[key] == original["facts"][0][key]
+    assert fact["dimension_links"][0] == {
+        "dimension_model": link.dimension_model,
+        "key_pairs": [{"fact_field": "specimen link", "dimension_field": "specimen id"}],
+        "unmatched_policy": policy,
+        "unmatched_explanation": link.unmatched_explanation,
+    }
+    outputs = {field["name"]: field for field in fact["output_fields"]}
+    assert outputs["signed_mass"]["description"] == "Mass in grams"
+    assert outputs["signed_mass"]["additivity"] == "additive"
+    assert outputs["signed_mass"]["definition"]["explanation"] == "Negate removal measurements; leave missing values null"
+    assert outputs["observation count"]["definition"]["value"] == 1
+    assert outputs["mass_in_kg"]["definition"]["inputs"] == [{
+        "kind": "model", "dataset": None, "model": "fact_observations", "column": "signed_mass",
+    }]
+    for model in semantic["facts"] + semantic["dimensions"]:
+        assert "source_datasets" not in model
+        for field in model["output_fields"]:
+            assert all(ref["kind"] == "model" for ref in field["definition"]["inputs"])
+    assert plan.model_dump() == original
+
+
 def test_analysis_offload_preserves_tool_results_and_retrieval(tmp_path):
     directory = tmp_path / "context" / "call"
     plugins = tool_result_offload_plugins("analytical interpretation", frozenset({"offload_analysis"}), directory)
@@ -352,7 +419,7 @@ def test_plot_heals_render_failure_without_changing_nullable_data(plotting_model
 
 def test_plot_turn_limit_stops_uncorrectable_proposals(plotting_model, analytical_spec, tmp_path):
     bad = {'function': 'scatter', 'columns': {'x': 'missing'}, 'filters': [], 'options': {}}
-    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 5)
+    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 8)
     result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
         row_count=1, columns={'value': 'INTEGER'}, profile=[])
     events = []
@@ -361,8 +428,8 @@ def test_plot_turn_limit_stops_uncorrectable_proposals(plotting_model, analytica
         with pytest.raises(agent_runtime.InvocationLimitError, match='limit_turns'):
             agents.plot(analytical_spec, result, lambda *e: events.append(e), tmp_path / 'models.duckdb',
                         original_request='Explore the values', frame=pd.DataFrame({'value': [1]}))
-        assert budget.calls == 4
-    assert len(instances[0].requests) == 4
+        assert budget.calls == 7
+    assert len(instances[0].requests) == 7
     assert events[-1][3]['category'] == 'invocation_limit'
 
 
@@ -370,7 +437,7 @@ def test_global_budget_is_not_local_plot_exhaustion(plotting_model, analytical_s
     from strands.types.exceptions import EventLoopException
 
     bad = {'function': 'scatter', 'columns': {'x': 'missing'}, 'filters': [], 'options': {}}
-    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 5)
+    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 8)
     result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
         row_count=1, columns={'value': 'INTEGER'}, profile=[])
     settings = ReleaseSettings(max_model_calls=1)

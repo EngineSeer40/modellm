@@ -168,6 +168,22 @@ def test_missing_usage_and_cache_pricing_cannot_count_as_free():
         priced.before_model()
 
 
+def test_plotting_unknown_usage_exception_preserves_known_cost_call_and_time_limits():
+    budget = RunBudget(ReleaseSettings(max_cost_usd=2, max_model_calls=1, run_seconds=10))
+    budget.usage_unknown = True
+    budget.before_model(allow_unknown_usage=True)
+    with pytest.raises(RuntimeError, match='Internal model calls'):
+        budget.before_model(allow_unknown_usage=True)
+    budget.calls = 0
+    budget.cost = 2
+    with pytest.raises(RuntimeError, match='cost budget'):
+        budget.before_model(allow_unknown_usage=True)
+    budget.cost = 0
+    budget.started -= 20
+    with pytest.raises(RuntimeError, match='deadline'):
+        budget.before_model(allow_unknown_usage=True)
+
+
 def test_worker_deadline_kills_descendants_releases_slot_and_preserves_usage(tmp_path, monkeypatch):
     import src.execution as execution
     real_popen = subprocess.Popen
@@ -263,11 +279,13 @@ def test_live_access_requires_enabled_runs_and_configured_code(tmp_path, monkeyp
         run_manager.clear()
 
 
-def test_demo_inputs_fill_editable_draft_and_use_normal_submission(tmp_path, monkeypatch):
+@pytest.mark.parametrize("demo", ["survey", "churn"])
+def test_demo_inputs_fill_editable_draft_and_use_normal_submission(tmp_path, monkeypatch, demo):
     from io import BytesIO
     from streamlit.testing.v1 import AppTest
-    from samples.sample_questions import SAMPLE_1, SAMPLE_1_FILES
-    from src.ui.app import run_manager
+    from src.ui.app import DEMO_DATASETS, run_manager
+
+    filenames, question = DEMO_DATASETS[demo]
 
     monkeypatch.setenv("MODELLM_PROD", "false")
     monkeypatch.setenv("MODELLM_LIVE_ENABLED", "true")
@@ -283,21 +301,24 @@ def test_demo_inputs_fill_editable_draft_and_use_normal_submission(tmp_path, mon
     root = Path(__file__).resolve().parents[1]
     app = AppTest.from_file(root / "app.py").run(timeout=15)
     try:
-        next(b for b in app.button if b.label == "Insert Demo Data").click().run(timeout=15)
-        assert not app.exception and not submissions
-        assert app.text_area[0].value == SAMPLE_1.strip()
-        assert app.get("file_uploader")
-        assert app.session_state["_upload_version"] == 1
-        assert "_pending_demo_uploads" not in app.session_state
+        # Switching demos and clicking the same demo again each replace the draft.
+        other = "churn" if demo == "survey" else "survey"
+        for version, selected_demo in enumerate((other, demo, demo), start=1):
+            next(b for b in app.button if b.label == f"Add {selected_demo.title()} Demo").click().run(timeout=15)
+            assert not app.exception and not submissions
+            assert app.text_area[0].value == DEMO_DATASETS[selected_demo][1].strip()
+            assert len(app.get("file_uploader")) == 1
+            assert app.session_state["_upload_version"] == version
+            assert "_pending_demo_uploads" not in app.session_state
+        assert app.text_area[0].value == question.strip()
         assert not any(str(button.key).startswith("remove_demo_") for button in app.button)
         # AppTest cannot execute browser JavaScript. Supply the files returned by
         # the native uploader after selection/removal; the bridge is browser-tested.
         selected = []
-        for name in SAMPLE_1_FILES:
-            if name != "invoices.json":
-                file = BytesIO((root / "samples" / name).read_bytes())
-                file.name = name
-                selected.append(file)
+        for name in filenames[:-1]:
+            file = BytesIO((root / "samples" / demo / name).read_bytes())
+            file.name = name
+            selected.append(file)
         monkeypatch.setattr("src.ui.app.st.file_uploader", lambda *args, **kwargs: selected)
         app.run(timeout=15)
         app.text_area[0].set_value("My edited question").run(timeout=15)
@@ -306,8 +327,8 @@ def test_demo_inputs_fill_editable_draft_and_use_normal_submission(tmp_path, mon
         uploads, request = submissions[0]
         assert request == "My edited question"
         assert dict(uploads) == {
-            name: (root / "samples" / name).read_bytes()
-            for name in SAMPLE_1_FILES if name != "invoices.json"
+            name: (root / "samples" / demo / name).read_bytes()
+            for name in filenames[:-1]
         }
     finally:
         run_manager().shutdown()

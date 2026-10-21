@@ -6,6 +6,8 @@ import urllib.request
 
 parameters = json.loads(os.environ["CFN_PARAMETERS"])
 parameters["ImageUri"] = os.environ["IMAGE_URI"]
+# Update existing stacks too: CloudFormation otherwise retains their private setting.
+parameters["LangfusePublic"] = "true"
 if parameters.get("LiveEnabled", "false") not in {"false", "true"}:
     raise ValueError("LiveEnabled must be true or false")
 stack = os.environ["STACK_NAME"]

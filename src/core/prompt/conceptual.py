@@ -27,15 +27,18 @@ Completeness is subordinate to grain and relationship correctness; do not force 
 ## Evidence, keys and relationships
 
 Infer candidate keys and relationships only where supported by the supplied evidence.
-Do not infer source coverage, exclusivity, uniqueness or relationship cardinality from naming, null patterns or the existence of a match path.
-A valid match path does not imply a unique match. Do not assume one-to-one cardinality or invent a tie-breaking or deduplication rule where the supplied evidence does not support one; record the ambiguity instead.
-Record unsupported or ambiguous semantics as assumptions or unresolved questions.
+In source profiles, `distinct` excludes SQL NULL and `unique` requires every row to be non-null and distinct. For a single source column, duplicate non-null values are evidenced only when `distinct < rows - nulls`. If `distinct == rows - nulls`, do not describe that column as containing duplicate non-null values merely because `unique=false`; nulls alone can make `unique=false`. This does not establish uniqueness after transformations or across composite keys.
+Do not infer source coverage, exclusivity, uniqueness or relationship cardinality from naming, null patterns or the existence of a match path. A valid match path does not imply a unique match; do not invent tie-breaking or deduplication where the evidence does not support it.
+Record an assumption or unresolved question only when the uncertainty changes a modelling decision or materially constrains safe use of the built model. State the affected model or field and the practical consequence. Do not catalogue hypothetical enrichment, speculate about causes of known coverage gaps, or repeat limitations already represented in grain, field semantics, relationships or unmatched handling.
+Use assumptions for interpretations the model must choose. Use `unresolved_questions` only for material uncertainties the supplied evidence cannot settle. Neither is a downstream investigation checklist; use empty lists when none are required.
+
 
 ## Conceptual versus analytical responsibility
 
 Rules supplied solely by the current analytical request—including cohorts, inactivity thresholds, observation cutoffs, rate denominators and requested reporting grains—belong to Analysis and must not be materialised in conceptual facts or dimensions.
 A derived fact is appropriate only where the derived business process or state is independently supported by the source evidence and does not depend on rules introduced by the current request.
 Describing a request-specific derivation as reusable is not sufficient justification.
+Request-specific metric definitions and analytical choices belong to Analysis when the conceptual model already preserves the source evidence needed to make them. Do not repeat those choices or their unresolved definitions in Conceptual assumptions or `unresolved_questions`. Retain only source-semantic uncertainty that materially limits how Analysis can safely use the built model.
 
 ## Planned outputs and source references
 
@@ -54,6 +57,9 @@ Each definition uses `kind`, `inputs`, `explanation` and `value`.
 * `generate` has no field inputs.
 
 Use `explanation` for transformation intent, constant purpose or generation intent; dbt writes the SQL.
+Make each output `description` sufficient to use the built field safely: include its business meaning, relevant units, time/state interpretation and material transformation effects (such as sign, null handling or precedence). Keep construction details in `definition`; do not repeat raw mappings in prose.
+Put grain and population semantics in `grain`, field semantics in `description`, and unmatched consequences in `unmatched_explanation`. Use `modelling_rationale` briefly to justify the source-supported process and grain, not as the sole home for analytical-use semantics.
+State each semantic limitation once in its most specific field. Use plan-level assumptions/questions only for material decisions or uncertainties not already expressed there; do not repeat a limitation across descriptions, explanations, rationale and plan-level lists. Transformation instructions must still be complete enough for dbt to implement the field.
 Input references use `kind`, `column` and either `dataset` for a source field or `model` for a planned output.
 Use exact names from this run; descriptions are not references.
 `grain_key_fields` is an empty list when no enforceable identity is established.

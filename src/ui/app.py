@@ -10,13 +10,15 @@ from pathlib import Path
 
 import streamlit as st
 
-from samples.sample_questions import SAMPLE_1, SAMPLE_1_FILES
+from samples.sample_questions import (
+    SAMPLE_CHURN, SAMPLE_CHURN_FILES, SAMPLE_SURVEY, SAMPLE_SURVEY_FILES,
+)
 
 from src.run import RunState
 from src.config import ReleaseSettings
 from src.execution import RunManager
 
-from .live import render_stream, render_timeline
+from .live import render_stage_progress, render_stream, render_timeline
 from .saved_run import load_saved_run
 from .views import (
     render_data_model,
@@ -27,6 +29,10 @@ from .views import (
 )
 
 SURFACES = ("Run", "Results", "Data Model", "Technical Details")
+DEMO_DATASETS = {
+    "survey": (SAMPLE_SURVEY_FILES, SAMPLE_SURVEY),
+    "churn": (SAMPLE_CHURN_FILES, SAMPLE_CHURN),
+}
 
 
 @st.cache_resource
@@ -81,12 +87,13 @@ def _collect_run():
     return job["current"]
 
 
-def _insert_demo_data():
-    """Fill the draft only; demo inputs use the normal validated submission path."""
-    samples = Path(__file__).resolve().parents[2] / "samples"
-    uploads = {name: (samples / name).read_bytes() for name in SAMPLE_1_FILES}
+def _insert_demo_data(demo: str):
+    """Replace the draft with one complete demo; never merge demo selections."""
+    filenames, request = DEMO_DATASETS[demo]
+    samples = Path(__file__).resolve().parents[2] / "samples" / demo
+    uploads = {name: (samples / name).read_bytes() for name in filenames}
     st.session_state["_pending_demo_uploads"] = uploads
-    st.session_state["run_request"] = SAMPLE_1.strip()
+    st.session_state["run_request"] = request.strip()
     # The native uploader is read-only in session state. A new key clears old uploads.
     st.session_state["_upload_version"] = st.session_state.get("_upload_version", 0) + 1
 
@@ -115,7 +122,7 @@ def _populate_demo_uploads(uploader_key):
           if (input) break;
           await new Promise(resolve => setTimeout(resolve, 50));
         }}
-        if (!input || input.dataset.demoInserted) return;
+        if (!input || !input.isConnected || input.dataset.demoInserted) return;
         input.dataset.demoInserted = 'true';
         const transfer = new DataTransfer();
         for (const file of {payload}) {{
@@ -134,8 +141,9 @@ def render_run(state: RunState | None, *, saved=False):
         st.header("Business question")
         st.write(state.get("request", ""))
         render_outcome(state)
+        focus_phase = render_stage_progress(state)
         st.subheader("Workflow stages")
-        render_timeline(state)
+        render_timeline(state, focus_phase=focus_phase)
         with st.expander("Chronological stream"):
             render_stream(state.get("events", []))
         return
@@ -162,8 +170,10 @@ def render_run(state: RunState | None, *, saved=False):
         with st.container(gap="xxsmall", key="dataset_picker"):
             st.markdown("Related datasets")
             with st.container(horizontal=True, gap=None, vertical_alignment="bottom"):
-                st.button("Insert Demo Data", key="insert_demo_data",
-                          on_click=_insert_demo_data, disabled=busy)
+                with st.container(horizontal=True, gap="xxsmall", width="content", key="demo_picker"):
+                    for demo in DEMO_DATASETS:
+                        st.button(f"Add {demo.title()} Demo", key=f"insert_{demo}_demo",
+                                  on_click=_insert_demo_data, args=(demo,), disabled=busy, wrap=True)
                 files = st.file_uploader(
                     "Related datasets",
                     type=["csv", "parquet", "json", "jsonl", "ndjson"],
@@ -193,6 +203,8 @@ def render_run(state: RunState | None, *, saved=False):
             placeholder="Describe the question, the comparisons you need and any business rules to apply.",
         )
         submitted = st.button("Start Modelling", type="primary", disabled=busy)
+    progress_state = current or {"events": [], "status": "running"}
+    focus_phase = render_stage_progress(progress_state)
     show_stream = st.toggle(
         "Show live chronological stream",
         value=os.environ.get("MODELLM_SHOW_LIVE_STREAM", "1") != "0",
@@ -200,14 +212,14 @@ def render_run(state: RunState | None, *, saved=False):
     )
     if show_stream:
         st.subheader("Live chronological stream")
-        with st.container(height=420, border=True, autoscroll=True):
+        with st.container(height=294, border=True, autoscroll=True):
             stream = st.empty()
             with stream.container():
                 render_stream((current or {}).get("events", []))
     st.subheader("Workflow stages")
     timeline = st.empty()
     with timeline.container():
-        render_timeline(current or {"events": [], "status": "running"})
+        render_timeline(progress_state, focus_phase=focus_phase)
     if submitted:
         if not request.strip():
             st.error("Describe the business question you want to answer.")
@@ -287,9 +299,9 @@ def render_app(*, saved_run=None):
             color: #dedede !important;
           }
           /* Join the sample action to the native upload field as one control. */
-          .st-key-dataset_picker .st-key-insert_demo_data {
-            min-height: 4.25rem;
-            padding: 0.75rem 0.5rem;
+          .st-key-dataset_picker .st-key-demo_picker {
+            min-height: 3.25rem;
+            padding: 0.375rem;
             display: flex;
             align-items: center;
             box-sizing: border-box;
@@ -297,18 +309,27 @@ def render_app(*, saved_run=None):
             border-right: 1px solid light-dark(#d6d8dc, #41444c);
             border-radius: 0.5rem 0 0 0.5rem;
           }
-          .st-key-dataset_picker .st-key-insert_demo_data button,
+          .st-key-dataset_picker .st-key-demo_picker button,
           .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] > span > button {
-            width: 8.25rem;
-            min-height: 2.5rem;
+            width: 6.6rem;
+            min-height: 2rem;
+          }
+          .st-key-dataset_picker .st-key-demo_picker button {
+            padding: 0.25rem 0.375rem;
+          }
+          .st-key-dataset_picker .st-key-demo_picker button p {
+            font-size: 0.8125rem;
+            line-height: 1.15;
           }
           .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] {
+            min-height: 3.25rem;
+            padding: 0.375rem 0.5rem;
             align-items: center;
             border-top-left-radius: 0;
             border-bottom-left-radius: 0;
           }
           @media (max-width: 640px) {
-            .st-key-dataset_picker .st-key-insert_demo_data {
+            .st-key-dataset_picker .st-key-demo_picker {
               min-width: 100%;
               border-radius: 0.5rem 0.5rem 0 0;
               border-right: 0;
