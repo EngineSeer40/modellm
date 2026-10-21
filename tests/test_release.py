@@ -266,13 +266,12 @@ def test_live_access_requires_enabled_runs_and_configured_code(tmp_path, monkeyp
         if not configured:
             assert not app.text_input
             return
-        app.text_input[0].set_value("incorrect-code")
-        next(button for button in app.button if button.label == "Unlock live runs").click().run(timeout=15)
+        assert not any(button.label == "Unlock live runs" for button in app.button)
+        app.text_input[0].set_value("incorrect-code").run(timeout=15)
         assert not app.exception and not app.get("file_uploader")
         assert any("not accepted" in error.value for error in app.error)
         app.session_state["_access_retry_at"] = 0
-        app.text_input[0].set_value(access_code)
-        next(button for button in app.button if button.label == "Unlock live runs").click().run(timeout=15)
+        app.text_input[0].set_value(access_code).run(timeout=15)
         assert not app.exception and app.get("file_uploader")
     finally:
         run_manager().shutdown()
