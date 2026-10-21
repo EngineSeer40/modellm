@@ -86,6 +86,15 @@ def test_native_sdk_spans_share_workflow_attempt_context_and_call_ids(spans, lan
     with telemetry.workflow_span("test-run", "Question") as root_span:
         url = telemetry.current_langfuse_trace_url()
         assert url == f"https://cloud.langfuse.com/project/demo/traces/{root_span.get_span_context().trace_id:032x}"
+        # The publication must be exportable while the workflow is still open;
+        # waiting for its final span can leave anonymous detail reads private.
+        telemetry.flush_telemetry()
+        publication, = langfuse_spans.get_finished_spans()
+        assert root_span.is_recording()
+        assert publication.name == "modellm.trace_publication"
+        assert publication.attributes["langfuse.trace.public"] is True
+        assert publication.context.trace_id == root_span.get_span_context().trace_id
+        assert publication.parent.span_id == root_span.get_span_context().span_id
         asyncio.run(invoke_attempts())
     # An unrelated scope must not be exported simply because it is in the process.
     with trace.get_tracer("unrelated.library").start_as_current_span("unrelated"):

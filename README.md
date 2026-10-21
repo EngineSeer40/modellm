@@ -188,7 +188,7 @@ Restart with the existing `uv run --env-file .env --frozen streamlit run app.py`
 
 Native traces include model messages, system instructions, tool arguments/results, reported usage and stage/attempt errors, plus the question and a small outcome summary. Run artifacts and databases are not uploaded. Existing application cost accounting remains authoritative; Langfuse's pricing display may differ.
 
-For a public CV demo, set `MODELLM_LANGFUSE_PUBLIC=true` before starting a run using suitable demo data. Anyone with its link can then view the **whole captured trace** without login. There is no separately sanitised public view. Turning public mode off affects future runs and does not revoke existing public traces.
+For a public CV demo, set `MODELLM_LANGFUSE_PUBLIC=true` before starting a run using suitable demo data. Anyone with its link can then view the **whole captured trace** without login. The worker marks the workflow public and immediately completes a short `modellm.trace_publication` child span under the same trace ID. This exports publication before the workflow finishes, avoiding anonymous-detail authorization failures observed when only a long-running root span carries the public flag. There is no separately sanitised public view. Turning public mode off affects future runs and does not revoke existing public traces.
 
 For ECS, store the key pair in Secrets Manager and supply the optional `LangfuseSecretArn`, `LangfuseBaseUrl` and `LangfusePublic` parameters through the existing `CFN_PARAMETERS`. See [the deployment runbook](todo/20261015_first_release_deployment_runbook.md#optional-langfuse-cloud-recording). No new GitHub credentials or roles are required.
 

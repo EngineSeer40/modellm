@@ -65,6 +65,11 @@ def current_langfuse_trace_url() -> str | None:
     try:
         if _langfuse_public:
             _langfuse_client.set_current_trace_as_public()
+            # Export publication before the potentially long-running workflow ends.
+            # Langfuse's legacy detail reader can otherwise retain a private trace
+            # while its events reader already considers the workflow public.
+            with trace.get_tracer(__name__).start_as_current_span("modellm.trace_publication"):
+                _langfuse_client.set_current_trace_as_public()
         url = _langfuse_client.get_trace_url(trace_id=f"{context.trace_id:032x}")
         if not url:
             logger.warning("Langfuse trace URL unavailable")
