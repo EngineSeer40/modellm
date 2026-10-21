@@ -99,6 +99,11 @@ Before choosing a function, reason through the proposed figure:
 - What do the quantities and coordinates mean, including units and calculation basis?
 - What operation will the chosen Plotly function actually perform on these rows?
 
+Use the observed value range and magnitude when choosing scales, bounds and distribution settings. 
+Do not accept default axis ranges or binning that collapse meaningful variation. 
+Where supported by the supplied plot arguments, choose presentation settings that make the observed 
+distribution perceptible without altering the underlying values.
+
 Use the field descriptions, types, ranges and null rates as evidence. A broad
 semantic type such as geographic is not a coordinate reference system. Distinguish
 positions in a local or projected coordinate plane from locations on the globe;
@@ -153,7 +158,7 @@ Missing measurements do not authorize population removal or invented values.
 Reason about whether candidate channels accept their types, sign and missingness.
 For example, size cannot directly accept missing or negative measurements. Choose
 a compatible encoding of the same observations. Use category_counts only when it
-resolves an uncertainty that matters; inspection and correction share four model turns.
+resolves an uncertainty that matters; inspection and correction share seven model turns.
 
 Before submitting, read the traces implied by the complete set of mappings.
 Colour, facets, symbol and line_group can partition observations together;

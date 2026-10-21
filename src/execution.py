@@ -42,14 +42,15 @@ class RunBudget:
             raise RunBudgetExceededError("Workflow deadline exceeded")
         return remaining
 
-    def before_model(self):
+    def before_model(self, *, allow_unknown_usage=False):
         self.remaining_seconds()
         try:
             check_limit(self.calls + 1, self.settings.max_model_calls, "Internal model calls")
         except ValueError as exc:
             raise RunBudgetExceededError(str(exc)) from exc
         if self.settings.max_cost_usd is not None:
-            if self.usage_unknown:
+            # Plotting can continue with partial accounting; known spend still applies.
+            if self.usage_unknown and not allow_unknown_usage:
                 raise RunBudgetExceededError("Cannot continue: provider usage or pricing unavailable")
             if self.cost >= self.settings.max_cost_usd:
                 raise RunBudgetExceededError("Reported model cost budget exhausted")
@@ -63,7 +64,7 @@ class RunBudget:
             return
         self.cost += cost
 
-    def hooks(self, model, region):
+    def hooks(self, model, region, *, allow_unknown_usage=False):
         from strands.hooks.events import BeforeModelCallEvent, AfterModelCallEvent
         budget = self
 
@@ -75,7 +76,7 @@ class RunBudget:
             pending = False
 
             def before(self, event):
-                budget.before_model()
+                budget.before_model(allow_unknown_usage=allow_unknown_usage)
                 self.pending = True
 
             def after(self, event):

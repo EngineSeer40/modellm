@@ -12,11 +12,13 @@ from src import agents
 from src.agent_runtime import InvocationLimitError
 from src.config import ReleaseSettings, use_settings
 from src.execution import RunBudgetExceededError
+from src.execution import use_budget
 from src.core.contracts import AcceptedAnalysisResult, AnalysisSpec, PlottingPlan, QueryDefinition
 from src.run import RunRecord
 from src.workflow import _render_visualisations
 from src.workspace import RunWorkspace
 from src.visualisation import accepted_result_plot_schema
+from local_model import LocalModel
 
 
 @pytest.fixture
@@ -48,7 +50,7 @@ def test_failed_chart_is_skipped_between_successful_charts(plot_case, monkeypatc
         calls.append(spec.title)
         if spec.title == 'Readings 1':
             if failure == 'limit':
-                raise InvocationLimitError('four plotting turns exhausted')
+                raise InvocationLimitError('seven plotting turns exhausted')
             return PlottingPlan(function='unsupported', columns={}, filters=[], options={})
         return PlottingPlan(function='scatter', columns={'x': 'position', 'y': 'reading'}, filters=[], options={})
 
@@ -77,6 +79,42 @@ def test_budget_and_transport_errors_preserve_completed_plotting(plot_case, monk
     assert all(attempt['status'] == 'skipped' and str(error) in attempt['error']
                for attempt in state['plot_attempts'])
     assert state['events'][-1]['kind'] == 'done'
+
+
+def test_provider_failure_with_unknown_usage_does_not_block_remaining_charts(plot_case, monkeypatch):
+    import strands.models
+
+    instances = []
+
+    class FakeBedrockModel(LocalModel):
+        def __init__(self, **kwargs):
+            super().__init__([('AcceptedResultPlottingPlan', {
+                'function': 'scatter', 'columns': {'x': 'position', 'y': 'reading'},
+                'filters': [], 'options': {},
+            })])
+            self.client = SimpleNamespace(meta=SimpleNamespace(region_name=kwargs['region_name']))
+            instances.append(self)
+
+        async def stream(self, *args, **kwargs):
+            if instances.index(self) == 0:
+                raise RuntimeError('Bedrock is unable to process your request')
+            async for event in super().stream(*args, **kwargs):
+                yield event
+
+    monkeypatch.setattr(strands.models, 'BedrockModel', FakeBedrockModel)
+    settings = ReleaseSettings(max_cost_usd=2, max_model_calls=10)
+    with use_settings(settings), use_budget(settings) as budget:
+        _render_visualisations(plot_case.record, plot_case.accepted, frozenset())
+        assert budget.usage_unknown
+        assert budget.calls == 3
+        assert budget.cost > 0
+        # Other stages retain their strict missing-usage guard.
+        with pytest.raises(RunBudgetExceededError, match='usage or pricing'):
+            budget.before_model()
+    state = plot_case.record.state
+    assert [attempt['status'] for attempt in state['plot_attempts']] == ['skipped', 'accepted', 'accepted']
+    assert [chart['result_index'] for chart in state['charts']] == [1, 2]
+    assert all((plot_case.record.workspace.run_dir / chart['file']).exists() for chart in state['charts'])
 
 
 def test_artifact_write_failure_is_not_skipped(plot_case, monkeypatch):

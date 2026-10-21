@@ -275,5 +275,5 @@ def plot(
         ],
         cost_experiments=cost_experiments,
         trace_attributes=trace_attributes,
-        limits={"turns": 4},
+        limits={"turns": 7},
     )

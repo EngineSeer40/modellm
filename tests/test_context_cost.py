@@ -352,7 +352,7 @@ def test_plot_heals_render_failure_without_changing_nullable_data(plotting_model
 
 def test_plot_turn_limit_stops_uncorrectable_proposals(plotting_model, analytical_spec, tmp_path):
     bad = {'function': 'scatter', 'columns': {'x': 'missing'}, 'filters': [], 'options': {}}
-    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 5)
+    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 8)
     result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
         row_count=1, columns={'value': 'INTEGER'}, profile=[])
     events = []
@@ -361,8 +361,8 @@ def test_plot_turn_limit_stops_uncorrectable_proposals(plotting_model, analytica
         with pytest.raises(agent_runtime.InvocationLimitError, match='limit_turns'):
             agents.plot(analytical_spec, result, lambda *e: events.append(e), tmp_path / 'models.duckdb',
                         original_request='Explore the values', frame=pd.DataFrame({'value': [1]}))
-        assert budget.calls == 4
-    assert len(instances[0].requests) == 4
+        assert budget.calls == 7
+    assert len(instances[0].requests) == 7
     assert events[-1][3]['category'] == 'invocation_limit'
 
 
@@ -370,7 +370,7 @@ def test_global_budget_is_not_local_plot_exhaustion(plotting_model, analytical_s
     from strands.types.exceptions import EventLoopException
 
     bad = {'function': 'scatter', 'columns': {'x': 'missing'}, 'filters': [], 'options': {}}
-    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 5)
+    instances = plotting_model([('AcceptedResultPlottingPlan', bad)] * 8)
     result = AcceptedAnalysisResult(result_id='result_00', relation='analysis."result_00"',
         row_count=1, columns={'value': 'INTEGER'}, profile=[])
     settings = ReleaseSettings(max_model_calls=1)

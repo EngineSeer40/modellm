@@ -1,4 +1,4 @@
-SAMPLE_1_FILES = (
+SAMPLE_CHURN_FILES = (
     "customer_records.csv",
     "store_locations.csv",
     "transactions_instore.csv",
@@ -6,16 +6,28 @@ SAMPLE_1_FILES = (
     "invoices.json",
 )
 
-SAMPLE_0 = """
+SAMPLE_SURVEY_FILES = (
+    "survey_stations.csv",
+    "field_measurements.csv",
+    "sample_registry.csv",
+    "lab_assays.csv",
+)
 
-Show how completed online sales revenue changes by month across subscription levels, while retaining customer gender as an available analytical dimension. I want to see where revenue is concentrated and whether the mix changes over time.
-Use only identified customers for demographic breakdowns; do not force-match guest orders.
-Treat refunded line value as negative net sales where the source supports it, and exclude cancelled orders.
-Prefer one coherent visualisation rather than splitting each dimension into a separate chart.
+SAMPLE_SURVEY = """
+
+Build a dimensional analytical model that connects survey stations, repeated field geophysics campaigns, collected samples, and laboratory assays at their correct grains.
+
+Use the model to produce exactly three Plotly charts:
+
+- Multiple-line chart: for traverse TR20, plot magnetic susceptibility against station chainage, with one line per survey campaign. Exclude invalid or null susceptibility readings and preserve station lithology as an available analytical dimension.
+
+- Elevation contour plot: create a contour plot of ground elevation using station easting and northing. Exclude stations with missing elevation, the 9999 elevation sentinel, and clearly invalid GPS positions or BAD_FIX quality. The contour must be based on the station-level elevation surface rather than on field-measurement rows.
+
+- 2D histogram: show the joint distribution of valid copper (CU) and zinc (ZN) assay concentrations for samples, using log transformed values of Cu and Zn to assist distributions plot. Exclude failed/null assay results and handle QC duplicate rows so they do not double-count samples.
 
 """
 
-SAMPLE_1 = """
+SAMPLE_CHURN = """
 
 Produce at least the following analytical concepts:
 

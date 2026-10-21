@@ -47,7 +47,7 @@ def test_plot_prompt_uses_result_profile_and_semantics_without_sample_rows(monke
     assert 'dimensions' in result_context
     assert 'measures' in result_context
     assert 'grain' in result_context
-    assert captured['limits'] == {'turns': 4}
+    assert captured['limits'] == {'turns': 7}
     shared = captured['blocks'][0]
     agents.plot(spec.model_copy(update={'title': 'Another chart', 'question': 'Another question'}),
                 result, lambda *args: None, tmp_path / 'modellm.duckdb', original_request='Another request',

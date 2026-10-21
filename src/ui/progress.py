@@ -8,11 +8,17 @@ from src.run import RunEvent, RunState
 PHASES = (
     ("Loading datasets", "Reading your uploaded files."),
     ("Understanding data", "Inspecting columns, data quality and candidate relationships."),
-    ("Designing the data model", "Choosing source-supported facts, dimensions and grains."),
-    ("Building and validating models", "Building the model and checking its tables and relationships."),
-    ("Analysing your request", "Calculating and validating the requested analytical results."),
+    ("Conceptual Model Stage", "Choosing source-supported facts, dimensions and grains."),
+    ("Dimensional Model Stage", "Building the model and checking its tables and relationships."),
+    ("Analysis Stage", "Calculating and validating the requested analytical results."),
     ("Interpreting results", "Checking findings against evidence from the accepted results."),
-    ("Building the dashboard", "Choosing visualisations and rendering the accepted results."),
+    ("Plotting Stage", "Choosing visualisations and rendering the accepted results."),
+)
+WORKFLOW_STAGES = (
+    (2, "Conceptual Model"),
+    (3, "Dimensional Model"),
+    (4, "Analysis"),
+    (6, "Plotting"),
 )
 STAGE_PHASE = {
     "loading data": 0,
@@ -63,6 +69,9 @@ def project_progress(events: list[RunEvent], status: str = "running") -> list[di
             phase["status"] = "running"
     if status == "failed" and current is not None:
         phases[current]["status"] = "failed"
+    elif status == "complete":
+        for phase in phases:
+            phase["status"] = "complete"
     return phases
 
 
@@ -82,11 +91,11 @@ def failure_message(state: RunState) -> str:
     messages = {
         "Loading datasets": "The uploaded datasets could not be loaded.",
         "Understanding data": "The source data could not be inspected.",
-        "Designing the data model": "A valid data model could not be established.",
-        "Building and validating models": "The generated data model could not pass validation.",
-        "Analysing your request": "The requested analytical results could not be validated.",
+        "Conceptual Model Stage": "A valid data model could not be established.",
+        "Dimensional Model Stage": "The generated data model could not pass validation.",
+        "Analysis Stage": "The requested analytical results could not be validated.",
         "Interpreting results": "The analytical findings could not be verified against their evidence.",
-        "Building the dashboard": "The dashboard could not be rendered from the accepted results.",
+        "Plotting Stage": "The dashboard could not be rendered from the accepted results.",
     }
     return messages.get(failed, "The run could not be completed.")
 

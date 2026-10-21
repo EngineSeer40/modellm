@@ -9,7 +9,7 @@ from sqlglot import exp
 
 from src.run import RunProgress, RunState
 
-from .progress import STAGE_PHASE, project_progress
+from .progress import STAGE_PHASE, WORKFLOW_STAGES, project_progress
 
 
 def _plan_summary(stage, payload):
@@ -298,22 +298,77 @@ def _dbt(state, events):
                     st.code(file.get("content", ""), language="sql")
 
 
-def render_timeline(state: RunState | RunProgress):
+def render_stage_progress(state: RunState | RunProgress) -> int | None:
+    """Show the four agent stages and return the phase selected for navigation."""
+    phases = project_progress(state.get("events", []), state.get("status", "running"))
+    st.html("""<style>
+      .st-key-stage_progress [class*="st-key-stagenav_current_"] button {
+        color: light-dark(#137333, #75d99a);
+        background: light-dark(#e7f4eb, #173b29);
+        border-color: light-dark(#78b98c, #397b50);
+      }
+      .st-key-stage_progress [class*="st-key-stagenav_pending_"] button {
+        opacity: 0.5;
+      }
+      .st-key-stage_progress [class*="st-key-stagenav_failed_"] button {
+        color: light-dark(#b3261e, #ffb4ab);
+      }
+      [class*="st-key-stage_"] { scroll-margin-top: 5rem; }
+    </style>""")
+    selected = None
+    icons = {"complete": ":material/check_circle:", "current": ":material/radio_button_checked:",
+             "pending": ":material/radio_button_unchecked:", "failed": ":material/error:"}
+    with st.container(horizontal=True, vertical_alignment="center", gap="small", key="stage_progress"):
+        for position, (index, title) in enumerate(WORKFLOW_STAGES):
+            status = phases[index]["status"]
+            appearance = "current" if status in {"running", "repairing", "checking"} else status
+            if position:
+                st.markdown(":gray[→]")
+            if st.button(title, key=f"stagenav_{appearance}_{index}", icon=icons[appearance],
+                         help=f"{title} · {status.capitalize()}. Open stage details."):
+                selected = index
+    return selected
+
+
+def _scroll_to_stage(key: str) -> None:
+    """Scroll to a native expander after Streamlit has mounted the updated view."""
+    class_name = json.dumps(f"st-key-{key}").replace("<", "\\u003c")
+    st.html(f"""<script>
+      (() => {{
+        let attempts = 0;
+        const scroll = () => {{
+          const stage = document.getElementsByClassName({class_name})[0];
+          if (stage) {{
+            stage.scrollIntoView({{behavior: 'instant', block: 'start'}});
+          }}
+          // Allow the native expander update and Streamlit scroll restoration
+          // to settle before the final scroll. No listeners survive the action.
+          if (++attempts < 3) setTimeout(scroll, 150);
+        }};
+        setTimeout(scroll, 100);
+      }})();
+    </script>""", unsafe_allow_javascript=True)
+
+
+def render_timeline(state: RunState | RunProgress, *, focus_phase: int | None = None):
     events = state.get("events", [])
     phases = project_progress(events, state.get("status", "running"))
+    focus_key = None
     for index, phase in enumerate(phases):
         phase_events = [e for e in events if STAGE_PHASE.get(e.get("stage")) == index]
         if index == STAGE_PHASE["analytical finding"] and not phase_events:
             continue
         label = "Running" if phase["status"] in {"repairing", "checking"} else phase["status"].capitalize()
-        title = "Building data models" if index == 3 else phase["label"]
         # Mount a new, open expander once this phase first has activity. Keep its
         # key and initial expanded value unchanged afterward so polling and
         # completion preserve the user's browser-side open/closed choice.
         started = bool(phase_events)
-        with st.expander(f"{title} · {label}", expanded=started,
-                         key=f"stage_{state.get('run_id', 'draft')}_{index}_{'started' if started else 'pending'}"):
-            st.write("Building the declared facts and dimensions." if index == 3 else phase["detail"])
+        key = f"stage_{state.get('run_id', 'draft')}_{index}_{'started' if started else 'pending'}"
+        if focus_phase == index:
+            st.session_state[key] = True
+            focus_key = key
+        with st.expander(phase["label"], expanded=started, key=key, on_change="rerun"):
+            st.caption(f"{label} · {phase['detail']}")
             if phase["status"] == "pending":
                 st.caption("Waiting for earlier stages to finish.")
                 continue
@@ -357,6 +412,8 @@ def render_timeline(state: RunState | RunProgress):
             for event in phase_events:
                 if event.get("kind") == "reasoning_status":
                     st.caption(event["message"])
+    if focus_key is not None:
+        _scroll_to_stage(focus_key)
 
 
 
