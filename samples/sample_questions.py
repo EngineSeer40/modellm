@@ -23,7 +23,7 @@ Use the model to produce exactly three Plotly charts:
 
 - Elevation contour plot: create a contour plot of ground elevation using station easting and northing. Exclude stations with missing elevation, the 9999 elevation sentinel, and clearly invalid GPS positions or BAD_FIX quality. The contour must be based on the station-level elevation surface rather than on field-measurement rows.
 
-- 2D Bubble plot: show plots of valid copper (CU) and zinc (ZN) along lat and long, Use bubble size to denote assay ppm concentrations. Exclude lat long outliers. Exclude failed/null assay results and handle QC duplicate rows so they do not double-count samples.
+- 2D Bubble plot: show plots of valid copper (CU) and zinc (ZN) along easting and northing, Use bubble size to denote assay ppm concentrations. Exclude easting and northing outliers. Exclude failed/null assay results and handle QC duplicate rows so they do not double-count samples.
 
 """
 
