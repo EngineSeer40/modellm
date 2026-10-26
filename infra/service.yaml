@@ -7,8 +7,6 @@ Parameters:
   Hostname: {Type: String}
   ImageUri: {Type: String, AllowedPattern: '.+\.dkr\.ecr\..+\.amazonaws\.com/.+@sha256:[a-f0-9]{64}'}
   RepositoryArn: {Type: String}
-  # Deprecated and unused; retain the parameter so existing CFN_PARAMETERS still deploy.
-  PreviewSecretArn: {Type: String, Default: ''}
   SecretKmsKeyArn: {Type: String, Default: ''}
   LangfuseSecretArn: {Type: String, Default: ''}
   LangfuseBaseUrl: {Type: String, Default: 'https://jp.cloud.langfuse.com'}

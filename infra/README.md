@@ -42,7 +42,7 @@ All workspace files count toward the 2 GiB budget. Inputs are deleted on termina
 ## Operator bootstrap
 
 1. Supply an existing VPC, **two public subnets in different AZs**, their internet-gateway routes, an ACM certificate in Sydney and a hostname. Configure DNS to the ALB output after creation. Existing private subnets/NAT can replace the production networking later. Security groups allow task ingress only from the ALB.
-2. No access-code secret is required. The deprecated `PreviewSecretArn` parameter is accepted for compatibility but is unused; the task no longer fetches it. Optional Langfuse credentials still use Secrets Manager and may require `SecretKmsKeyArn`. LiveEnabled defaults to true for public submissions; set it to false to disable them.
+2. No access-code secret is required. The `PreviewSecretArn` template parameter has been removed; the deploy script discards it from older saved CFN_PARAMETERS for compatibility. The task no longer fetches that secret. Optional Langfuse credentials still use Secrets Manager and may require `SecretKmsKeyArn`. LiveEnabled defaults to true for public submissions; set it to false to disable them.
 3. Bootstrap the immutable, scan-enabled ECR repository:
 
    ```sh

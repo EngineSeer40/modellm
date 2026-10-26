@@ -5,6 +5,8 @@ import subprocess
 import urllib.request
 
 parameters = json.loads(os.environ["CFN_PARAMETERS"])
+# Older saved parameter sets may still contain the removed password secret.
+parameters.pop("PreviewSecretArn", None)
 parameters["ImageUri"] = os.environ["IMAGE_URI"]
 # Update existing stacks too: CloudFormation otherwise retains their private setting.
 parameters["LangfusePublic"] = "true"
