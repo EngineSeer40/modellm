@@ -244,35 +244,26 @@ def test_ingest_rejects_source_shape_before_profiling(tmp_path):
         assert con.execute("SELECT count(*) FROM raw.accounts").fetchone()[0] == 2
 
 
-@pytest.mark.parametrize(("live_enabled", "access_code", "configured"), [
-    ("false", "testcode", False),
-    ("true", "", False), ("true", "1234567", False), ("true", "testcode", True),
-])
-def test_live_access_requires_enabled_runs_and_configured_code(tmp_path, monkeypatch, live_enabled, access_code, configured):
+@pytest.mark.parametrize("prod", ["true", "false"])
+@pytest.mark.parametrize("live_enabled", ["true", "false"])
+def test_live_access_is_public_when_enabled(tmp_path, monkeypatch, prod, live_enabled):
     from streamlit.testing.v1 import AppTest
     from src.ui.app import run_manager
-    monkeypatch.setenv("MODELLM_PROD", "true")
+    monkeypatch.setenv("MODELLM_PROD", prod)
     monkeypatch.setenv("MODELLM_RUNS_ROOT", str(tmp_path / "runs"))
     monkeypatch.setenv("MODELLM_LIVE_ENABLED", live_enabled)
-    monkeypatch.setenv("MODELLM_LIVE_ACCESS_CODE", access_code)
+    monkeypatch.delenv("MODELLM_LIVE_ACCESS_CODE", raising=False)
     run_manager.clear()
     app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py").run(timeout=15)
     try:
         assert not app.exception
         assert [tab.label for tab in app.tabs] == ["Run", "Results", "Data Model", "Technical Details"]
-        assert not app.get("file_uploader")
+        assert bool(app.get("file_uploader")) == (live_enabled == "true")
         assert "result" not in app.session_state
         assert not any("example" in button.label.lower() for button in app.button)
-        if not configured:
-            assert not app.text_input
-            return
-        assert not any(button.label == "Unlock live runs" for button in app.button)
-        app.text_input[0].set_value("incorrect-code").run(timeout=15)
-        assert not app.exception and not app.get("file_uploader")
-        assert any("not accepted" in error.value for error in app.error)
-        app.session_state["_access_retry_at"] = 0
-        app.text_input[0].set_value(access_code).run(timeout=15)
-        assert not app.exception and app.get("file_uploader")
+        assert not app.text_input
+        if live_enabled == "false":
+            assert any("Live runs are currently disabled" in info.value for info in app.info)
     finally:
         run_manager().shutdown()
         run_manager.clear()

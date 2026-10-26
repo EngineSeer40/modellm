@@ -1,11 +1,9 @@
 """Streamlit composition and request handling."""
 
 import base64
-import hmac
 import json
 import os
 import secrets
-import time
 from pathlib import Path
 
 import streamlit as st
@@ -46,23 +44,7 @@ def _live_access(settings):
     if not settings.live_enabled:
         st.info("Live runs are currently disabled.")
         return False
-    if not settings.prod:
-        return True
-    if st.session_state.get("_preview_access"):
-        return True
-    expected = os.environ.get("MODELLM_LIVE_ACCESS_CODE", "")
-    if len(expected) < 8:
-        st.info("Live access is not configured.")
-        return False
-    code = st.text_input("Access code", type="password")
-    if code and time.time() >= st.session_state.get("_access_retry_at", 0):
-        if hmac.compare_digest(code.encode(), expected.encode()):
-            st.session_state["_preview_access"] = True
-            st.rerun()
-        else:
-            st.session_state["_access_retry_at"] = time.time() + 5
-            st.error("Access code not accepted. Wait a moment before trying again.")
-    return False
+    return True
 
 
 def _collect_run():

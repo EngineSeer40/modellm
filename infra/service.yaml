@@ -7,26 +7,41 @@ Parameters:
   Hostname: {Type: String}
   ImageUri: {Type: String, AllowedPattern: '.+\.dkr\.ecr\..+\.amazonaws\.com/.+@sha256:[a-f0-9]{64}'}
   RepositoryArn: {Type: String}
-  # Retain this existing input key for compatibility; it holds the production live-access-code secret.
-  PreviewSecretArn: {Type: String}
+  # Deprecated and unused; retain the parameter so existing CFN_PARAMETERS still deploy.
+  PreviewSecretArn: {Type: String, Default: ''}
   SecretKmsKeyArn: {Type: String, Default: ''}
   LangfuseSecretArn: {Type: String, Default: ''}
-  LangfuseBaseUrl: {Type: String, Default: 'https://cloud.langfuse.com'}
+  LangfuseBaseUrl: {Type: String, Default: 'https://jp.cloud.langfuse.com'}
   LangfusePublic: {Type: String, Default: 'true', AllowedValues: ['true', 'false']}
   ModelId: {Type: String, Default: 'au.anthropic.claude-sonnet-4-6'}
   PlottingModelId: {Type: String, Default: 'au.anthropic.claude-haiku-4-5-20251001-v1:0'}
   BedrockResourceArns:
     Type: CommaDelimitedList
     Description: Exact inference-profile ARNs AND all destination foundation-model ARNs resolved by the operator
-  LiveEnabled: {Type: String, Default: 'false', AllowedValues: ['true', 'false']}
+  LiveEnabled: {Type: String, Default: 'true', AllowedValues: ['true', 'false']}
   CostExperiments: {Type: String, Default: 'conceptual_guidance,conceptual_cache,early_finding_validation,small_analysis_previews,offload_analysis,offload_finding'}
   DesiredCount: {Type: Number, Default: 1, AllowedValues: [0, 1]}
-  DailyRuns: {Type: Number, Default: 10, MinValue: 1}
+  DailyRuns: {Type: Number, Default: 20, MinValue: 1}
+  CooldownSeconds: {Type: Number, Default: 60, MinValue: 1}
   RunSeconds: {Type: Number, Default: 1800, MinValue: 1}
-  MaxCostUsd: {Type: Number, Default: 3, MinValue: 0.01}
+  DbtSeconds: {Type: Number, Default: 180, MinValue: 1}
+  ReadSeconds: {Type: Number, Default: 180, MinValue: 1}
+  MaxCostUsd: {Type: Number, Default: 2, MinValue: 0.01}
   MaxModelCalls: {Type: Number, Default: 60, MinValue: 1}
   MaxOutputTokens: {Type: Number, Default: 16384, MinValue: 1}
+  MaxAnalyses: {Type: Number, Default: 4, MinValue: 1}
+  MaxCharts: {Type: Number, Default: 5, MinValue: 1}
+  MaxFileBytes: {Type: Number, Default: 20971520, MinValue: 1}
+  MaxUploadBytes: {Type: Number, Default: 62914560, MinValue: 1}
+  MaxPromptChars: {Type: Number, Default: 12000, MinValue: 1}
+  MaxSourceRows: {Type: Number, Default: 20000, MinValue: 1}
+  MaxSourceColumns: {Type: Number, Default: 30, MinValue: 1}
+  MaxProfileChars: {Type: Number, Default: 200000, MinValue: 1}
+  Threads: {Type: Number, Default: 1, MinValue: 1}
+  MemoryMb: {Type: Number, Default: 1024, MinValue: 1}
+  SpillMb: {Type: Number, Default: 512, MinValue: 1}
   WorkspaceBytes: {Type: Number, Default: 2147483648, MinValue: 1}
+  RetentionSeconds: {Type: Number, Default: 86400, MinValue: 1}
   Owner: {Type: String}
   BudgetEmail: {Type: String, Default: ''}
   MonthlyBudgetUsd: {Type: Number, Default: 50}
@@ -105,7 +120,7 @@ Resources:
         Version: '2012-10-17'
         Statement: [{Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}, Action: 'sts:AssumeRole'}]
       Policies:
-        - PolicyName: image-logs-access-code
+        - PolicyName: image-logs-telemetry
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -116,7 +131,6 @@ Resources:
               - Effect: Allow
                 Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
                 Resource: !GetAtt Logs.Arn
-              - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref PreviewSecretArn}
               - !If
                 - HasLangfuseSecret
                 - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref LangfuseSecretArn}
@@ -167,11 +181,26 @@ Resources:
             - {Name: MODELLM_LIVE_ENABLED, Value: !Ref LiveEnabled}
             - {Name: MODELLM_RUNS_ROOT, Value: /data/runs}
             - {Name: MODELLM_DAILY_RUNS, Value: !Ref DailyRuns}
+            - {Name: MODELLM_COOLDOWN_SECONDS, Value: !Ref CooldownSeconds}
             - {Name: MODELLM_RUN_SECONDS, Value: !Ref RunSeconds}
+            - {Name: MODELLM_DBT_SECONDS, Value: !Ref DbtSeconds}
+            - {Name: MODELLM_READ_SECONDS, Value: !Ref ReadSeconds}
             - {Name: MODELLM_MAX_COST_USD, Value: !Ref MaxCostUsd}
             - {Name: MODELLM_MAX_MODEL_CALLS, Value: !Ref MaxModelCalls}
             - {Name: MODELLM_MAX_OUTPUT_TOKENS, Value: !Ref MaxOutputTokens}
+            - {Name: MODELLM_MAX_ANALYSES, Value: !Ref MaxAnalyses}
+            - {Name: MODELLM_MAX_CHARTS, Value: !Ref MaxCharts}
+            - {Name: MODELLM_MAX_FILE_BYTES, Value: !Ref MaxFileBytes}
+            - {Name: MODELLM_MAX_UPLOAD_BYTES, Value: !Ref MaxUploadBytes}
+            - {Name: MODELLM_MAX_PROMPT_CHARS, Value: !Ref MaxPromptChars}
+            - {Name: MODELLM_MAX_SOURCE_ROWS, Value: !Ref MaxSourceRows}
+            - {Name: MODELLM_MAX_SOURCE_COLUMNS, Value: !Ref MaxSourceColumns}
+            - {Name: MODELLM_MAX_PROFILE_CHARS, Value: !Ref MaxProfileChars}
+            - {Name: MODELLM_THREADS, Value: !Ref Threads}
+            - {Name: MODELLM_MEMORY_MB, Value: !Ref MemoryMb}
+            - {Name: MODELLM_SPILL_MB, Value: !Ref SpillMb}
             - {Name: MODELLM_WORKSPACE_BYTES, Value: !Ref WorkspaceBytes}
+            - {Name: MODELLM_RETENTION_SECONDS, Value: !Ref RetentionSeconds}
             - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
             - {Name: MODELLM_BEDROCK_MODEL_ID, Value: !Ref ModelId}
             - {Name: MODELLM_PLOTTING_MODEL_ID, Value: !Ref PlottingModelId}
@@ -180,10 +209,10 @@ Resources:
             - {Name: MODELLM_LANGFUSE_PUBLIC, Value: !Ref LangfusePublic}
             - {Name: LANGFUSE_BASE_URL, Value: !Ref LangfuseBaseUrl}
             - {Name: STREAMLIT_SERVER_MAX_UPLOAD_SIZE, Value: '20'}
+            - {Name: MODELLM_SHOW_LIVE_STREAM, Value: '1'}
             - {Name: STREAMLIT_BROWSER_SERVER_ADDRESS, Value: !Ref Hostname}
             - {Name: STREAMLIT_BROWSER_SERVER_PORT, Value: '443'}
           Secrets:
-            - {Name: MODELLM_LIVE_ACCESS_CODE, ValueFrom: !Ref PreviewSecretArn}
             - !If
               - HasLangfuseSecret
               - {Name: LANGFUSE_PUBLIC_KEY, ValueFrom: !Sub '${LangfuseSecretArn}:LANGFUSE_PUBLIC_KEY::'}
