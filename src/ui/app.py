@@ -143,10 +143,12 @@ def render_run(state: RunState | None, *, saved=False):
     # )
     if not _live_access(manager.settings):
         return
-    st.text(
-        "Upload 2–6 related datasets and describe what you would like ModeLLM to analyse, then press Start Modelling.\n"
-        "When finished, you can view the transformed data and visualisation plots with the tabs above.\n"
-        "Along the way, observe the decisions the LLM is making below."
+    st.html(
+        '<div>1. <span style="color: #7dd3fc">Upload</span> 2–6 related datasets and describe what you would like ModeLLM to analyse<br>'
+        '2. OR load a <span style="color: #fb923c">demo data</span> set<br>'
+        '3. Press <span style="color: #f87171">Start Modelling</span><br>'
+        "4. When finished, you can view the transformed data and visualisation plots with the tabs above.<br><br>"
+        "Along the way, observe the decisions the LLM is making below.</div>",
     )
     # Keep these widgets mounted in the Run tab on every app rerun. Drafts
     # commit when edited, rather than remaining unsubmitted form values.
@@ -313,12 +315,24 @@ def render_app(*, saved_run=None):
             border-radius: 0.5rem 0 0 0.5rem;
           }
           .st-key-dataset_picker .st-key-demo_picker button,
-          .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] > span > button {
+          .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] button {
             width: 6.6rem;
-            min-height: 2rem;
+            height: 2.5rem;
+            min-height: 2.5rem;
+            box-sizing: border-box;
           }
           .st-key-dataset_picker .st-key-demo_picker button {
             padding: 0.25rem 0.375rem;
+          }
+          .st-key-dataset_picker .st-key-demo_picker button:hover:not(:disabled) {
+            background-color: #fb923c;
+            border-color: #fb923c;
+            color: #111827;
+          }
+          .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] button:hover:not(:disabled) {
+            background-color: #7dd3fc;
+            border-color: #7dd3fc;
+            color: #111827;
           }
           .st-key-dataset_picker .st-key-demo_picker button p {
             font-size: 0.8125rem;
