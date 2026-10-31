@@ -56,6 +56,7 @@ Resources:
   Cluster:
     Type: AWS::ECS::Cluster
     Properties:
+      CapacityProviders: [FARGATE, FARGATE_SPOT]
       Tags: [{Key: Owner, Value: !Ref Owner}]
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -156,8 +157,8 @@ Resources:
     Properties:
       RequiresCompatibilities: [FARGATE]
       NetworkMode: awsvpc
-      Cpu: '2048'
-      Memory: '4096'
+      Cpu: '512'
+      Memory: '1024'
       RuntimePlatform: {CpuArchitecture: X86_64, OperatingSystemFamily: LINUX}
       ExecutionRoleArn: !GetAtt ExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
@@ -232,7 +233,9 @@ Resources:
     Properties:
       Cluster: !Ref Cluster
       TaskDefinition: !Ref TaskDefinition
-      LaunchType: FARGATE
+      CapacityProviderStrategy:
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 1
       PlatformVersion: '1.4.0'
       DesiredCount: !Ref DesiredCount
       HealthCheckGracePeriodSeconds: 60

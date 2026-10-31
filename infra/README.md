@@ -76,7 +76,7 @@ The operator-owned CloudFormation service role trusts only `cloudformation.amazo
 
 ## First cloud acceptance and rollback
 
-Leave one task/process; never enable autoscaling or overlap tasks without redesigning admission/state. ALB stickiness does not make local quotas distributed. The service uses 2 CPU/4 GiB and image-defined writable `/data` and `/tmp` volumes; the rest is read-only. The Dockerfile's matching `VOLUME` directives preserve directory permissions for Fargate. `/_stcore/health` reports web-server health only.
+Leave one task/process; never enable autoscaling or overlap tasks without redesigning admission/state. ALB stickiness does not make local quotas distributed. The service uses 0.5 vCPU/1 GiB on Fargate Spot and image-defined writable `/data` and `/tmp` volumes; the rest is read-only. Spot tasks can be interrupted, so an interruption can stop a run and lose task-local artifacts. The Dockerfile's matching `VOLUME` directives preserve directory permissions for Fargate. `/_stcore/health` reports web-server health only.
 
 After DNS/TLS and task startup: check task-role Bedrock invocation with a small workflow, reported/cache usage and build SHA; verify HTTPS WebSocket navigation, uploads/downloads, two-session busy isolation, timeout/recovery, expired artifacts and one largest supported synthetic input. Test rollback deliberately. These are cloud acceptance checks, **not claims made by local CI**. Set `LiveEnabled=true` to accept public submissions; it remains the operational on/off switch.
 
