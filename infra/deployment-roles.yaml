@@ -150,6 +150,7 @@ Resources:
                   - ecs:DeleteCluster
                   - ecs:UpdateCluster
                   - ecs:UpdateClusterSettings
+                  - ecs:PutClusterCapacityProviders
                   - ecs:CreateService
                   - ecs:UpdateService
                   - ecs:DeleteService
