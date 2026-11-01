@@ -1,9 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ModeLLM production - one Streamlit/Fargate task, ephemeral runs
+Description: ModeLLM production - one Streamlit/Fargate task behind Cloudflare Tunnel
 Parameters:
   VpcId: {Type: AWS::EC2::VPC::Id}
   PublicSubnets: {Type: 'List<AWS::EC2::Subnet::Id>'}
-  CertificateArn: {Type: String}
+  CloudflareTunnelSecretArn:
+    Type: String
+    Description: Secrets Manager ARN containing the raw remotely-managed Cloudflare Tunnel token
   Hostname: {Type: String}
   ImageUri: {Type: String, AllowedPattern: '.+\.dkr\.ecr\..+\.amazonaws\.com/.+@sha256:[a-f0-9]{64}'}
   RepositoryArn: {Type: String}
@@ -36,7 +38,7 @@ Parameters:
   MaxSourceColumns: {Type: Number, Default: 30, MinValue: 1}
   MaxProfileChars: {Type: Number, Default: 200000, MinValue: 1}
   Threads: {Type: Number, Default: 1, MinValue: 1}
-  MemoryMb: {Type: Number, Default: 1024, MinValue: 1}
+  MemoryMb: {Type: Number, Default: 768, MinValue: 1}
   SpillMb: {Type: Number, Default: 512, MinValue: 1}
   WorkspaceBytes: {Type: Number, Default: 2147483648, MinValue: 1}
   RetentionSeconds: {Type: Number, Default: 86400, MinValue: 1}
@@ -58,60 +60,11 @@ Resources:
     Properties:
       CapacityProviders: [FARGATE, FARGATE_SPOT]
       Tags: [{Key: Owner, Value: !Ref Owner}]
-  AlbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: HTTPS public ingress
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0}
-        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0}
   TaskSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Streamlit only from ALB; outbound AWS APIs via public IP
+      GroupDescription: Outbound-only ECS task for Cloudflare Tunnel and AWS APIs
       VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 8501
-          ToPort: 8501
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Scheme: internet-facing
-      Subnets: !Ref PublicSubnets
-      SecurityGroups: [!Ref AlbSecurityGroup]
-      LoadBalancerAttributes: [{Key: idle_timeout.timeout_seconds, Value: '300'}]
-      Tags: [{Key: Owner, Value: !Ref Owner}]
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      VpcId: !Ref VpcId
-      TargetType: ip
-      Port: 8501
-      Protocol: HTTP
-      HealthCheckPath: /_stcore/health
-      TargetGroupAttributes:
-        - {Key: stickiness.enabled, Value: 'true'}
-        - {Key: stickiness.type, Value: lb_cookie}
-  HttpListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: redirect
-          RedirectConfig: {Protocol: HTTPS, Port: '443', StatusCode: HTTP_301}
-  HttpsListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 443
-      Protocol: HTTPS
-      Certificates: [{CertificateArn: !Ref CertificateArn}]
-      DefaultActions: [{Type: forward, TargetGroupArn: !Ref TargetGroup}]
   ExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -119,7 +72,7 @@ Resources:
         Version: '2012-10-17'
         Statement: [{Effect: Allow, Principal: {Service: ecs-tasks.amazonaws.com}, Action: 'sts:AssumeRole'}]
       Policies:
-        - PolicyName: image-logs-telemetry
+        - PolicyName: image-logs-secrets
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -130,6 +83,7 @@ Resources:
               - Effect: Allow
                 Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
                 Resource: !GetAtt Logs.Arn
+              - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref CloudflareTunnelSecretArn}
               - !If
                 - HasLangfuseSecret
                 - {Effect: Allow, Action: 'secretsmanager:GetSecretValue', Resource: !Ref LangfuseSecretArn}
@@ -170,6 +124,12 @@ Resources:
           User: '10001:10001'
           ReadonlyRootFilesystem: true
           StopTimeout: 120
+          HealthCheck:
+            Command: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
           LinuxParameters: {InitProcessEnabled: true}
           PortMappings: [{ContainerPort: 8501, Protocol: tcp}]
           MountPoints:
@@ -226,10 +186,23 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-group: !Ref Logs
               awslogs-stream-prefix: app
+        - Name: cloudflared
+          Image: cloudflare/cloudflared:latest
+          Essential: false
+          Cpu: 64
+          Memory: 128
+          Command: [tunnel, --no-autoupdate, run]
+          Secrets:
+            - {Name: TUNNEL_TOKEN, ValueFrom: !Ref CloudflareTunnelSecretArn}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref Logs
+              awslogs-stream-prefix: cloudflared
       Tags: [{Key: Owner, Value: !Ref Owner}]
   Service:
     Type: AWS::ECS::Service
-    DependsOn: HttpsListener
     Properties:
       Cluster: !Ref Cluster
       TaskDefinition: !Ref TaskDefinition
@@ -238,7 +211,6 @@ Resources:
           Weight: 1
       PlatformVersion: '1.4.0'
       DesiredCount: !Ref DesiredCount
-      HealthCheckGracePeriodSeconds: 60
       DeploymentConfiguration:
         MinimumHealthyPercent: 0
         MaximumPercent: 100
@@ -248,7 +220,6 @@ Resources:
           AssignPublicIp: ENABLED
           Subnets: !Ref PublicSubnets
           SecurityGroups: [!Ref TaskSecurityGroup]
-      LoadBalancers: [{ContainerName: app, ContainerPort: 8501, TargetGroupArn: !Ref TargetGroup}]
       Tags: [{Key: Owner, Value: !Ref Owner}]
   Budget:
     Type: AWS::Budgets::Budget
@@ -264,7 +235,6 @@ Resources:
           Subscribers: [{SubscriptionType: EMAIL, Address: !Ref BudgetEmail}]
 Outputs:
   Url: {Value: !Sub 'https://${Hostname}'}
-  AlbDnsName: {Value: !GetAtt LoadBalancer.DNSName}
   ClusterName: {Value: !Ref Cluster}
   ServiceName: {Value: !GetAtt Service.Name}
   TaskRoleArn: {Value: !GetAtt TaskRole.Arn}
