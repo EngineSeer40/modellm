@@ -206,6 +206,9 @@ Resources:
     Properties:
       Cluster: !Ref Cluster
       TaskDefinition: !Ref TaskDefinition
+      # CloudFormation must send an explicit empty list to ECS to detach an
+      # existing load balancer from a service during this migration.
+      LoadBalancers: []
       CapacityProviderStrategy:
         - CapacityProvider: FARGATE_SPOT
           Weight: 1
