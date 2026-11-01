@@ -17,6 +17,9 @@ Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: Same VPC as the application CFN_PARAMETERS
+  HostedZoneId:
+    Type: String
+    Description: Existing Route 53 zone used by the application stack during ALB/DNS teardown
 Resources:
   # Programmatic access works without an account-level OIDC provider. No console login or keys are created here.
   CredentialsUser:
@@ -154,7 +157,6 @@ Resources:
                   - ecs:CreateService
                   - ecs:UpdateService
                   - ecs:DeleteService
-                  - ecs:DeregisterTaskDefinition
                   - ecs:DeleteTaskDefinitions
                   # Current CloudFormation service handlers inspect deployment progress.
                   - ecs:DescribeServiceDeployments
@@ -168,10 +170,12 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service-deployment/${ApplicationStackName}-Cluster-*/*/*'
                   - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${ApplicationStackName}-TaskDefinition-*:*'
               - Effect: Allow
-                Action: [ecs:RegisterTaskDefinition, ecs:DescribeClusters, ecs:DescribeServices, ecs:DescribeTaskDefinition, ecs:ListTagsForResource]
+                # CloudFormation deregisters task definitions against Resource "*" during replacement/rollback.
+                Action: [ecs:RegisterTaskDefinition, ecs:DeregisterTaskDefinition, ecs:DescribeClusters, ecs:DescribeServices, ecs:DescribeTaskDefinition, ecs:ListTagsForResource]
                 Resource: '*'
                 Condition:
                   StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}
+              # Keep these permissions until the application stack has deleted its ALB and alias record.
               - Effect: Allow
                 Action:
                   - elasticloadbalancing:CreateLoadBalancer
@@ -219,22 +223,12 @@ Resources:
                   ArnEqualsIfExists:
                     ec2:Vpc: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${VpcId}'
               - Effect: Allow
-                # VPC reads used by ELB provisioning, based on AWS's ELB managed policy.
-                # Keep these together: ELB checks more than just subnets/security groups.
                 Action:
                   - ec2:DescribeVpcs
                   - ec2:DescribeSubnets
                   - ec2:DescribeSecurityGroups
                   - ec2:GetSecurityGroupsForVpc
-                  - ec2:DescribeNetworkInterfaces
                   - ec2:DescribeAccountAttributes
-                  - ec2:DescribeInternetGateways
-                  - ec2:DescribeAddresses
-                  - ec2:DescribeInstances
-                  - ec2:DescribeRouteTables
-                  - ec2:DescribeVpcPeeringConnections
-                  - ec2:DescribeAvailabilityZones
-                  - ec2:DescribeIpamPools
                 Resource: '*'
                 Condition:
                   StringEquals: {aws:RequestedRegion: !Ref 'AWS::Region'}
@@ -250,6 +244,15 @@ Resources:
               - Effect: Allow
                 Action: [budgets:ViewBudget, budgets:ModifyBudget]
                 Resource: !Sub 'arn:${AWS::Partition}:budgets::${AWS::AccountId}:budget/${ApplicationStackName}-cost-alert'
+              - Effect: Allow
+                Action:
+                  - route53:ChangeResourceRecordSets
+                  - route53:GetHostedZone
+                  - route53:ListResourceRecordSets
+                Resource: !Sub 'arn:${AWS::Partition}:route53:::hostedzone/${HostedZoneId}'
+              - Effect: Allow
+                Action: route53:GetChange
+                Resource: !Sub 'arn:${AWS::Partition}:route53:::change/*'
 Outputs:
   CredentialsUserName: {Value: !Ref CredentialsUser}
   BuildRoleArn: {Value: !GetAtt BuildRole.Arn}
