@@ -39,6 +39,8 @@ Return each final analysis using either:
 * `direct`: final SELECT over validated main models, with `qualification_id` null.
 * `qualified`: final SELECT over `__modellm_population`, naming a `SharedQualification` that defines the common population.
 
+In a qualified analysis, the variant SQL may reference no other model anywhere, including inside nested CTEs. Project every field the variant needs through its `SharedQualification`.
+
 Use shared qualifications when related analyses genuinely share a population. Keep inclusion rules, observation treatment and denominator definitions consistent across related views unless the request justifies a difference.
 Inspect multiplicity where joins or repeated observations could change counts, weights or denominators. Choose a defensible analytical treatment rather than silently selecting records.
 Successful SQL execution establishes mechanical validity, not analytical correctness.
