@@ -38,7 +38,7 @@ Parameters:
   MaxSourceColumns: {Type: Number, Default: 30, MinValue: 1}
   MaxProfileChars: {Type: Number, Default: 200000, MinValue: 1}
   Threads: {Type: Number, Default: 1, MinValue: 1}
-  MemoryMb: {Type: Number, Default: 768, MinValue: 1}
+  MemoryMb: {Type: Number, Default: 1024, MinValue: 1}
   SpillMb: {Type: Number, Default: 512, MinValue: 1}
   WorkspaceBytes: {Type: Number, Default: 2147483648, MinValue: 1}
   RetentionSeconds: {Type: Number, Default: 86400, MinValue: 1}
@@ -111,8 +111,8 @@ Resources:
     Properties:
       RequiresCompatibilities: [FARGATE]
       NetworkMode: awsvpc
-      Cpu: '512'
-      Memory: '1024'
+      Cpu: '1024'
+      Memory: '2048'
       RuntimePlatform: {CpuArchitecture: X86_64, OperatingSystemFamily: LINUX}
       ExecutionRoleArn: !GetAtt ExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
