@@ -39,7 +39,7 @@ AcceptedResults = list[tuple[AnalysisSpec, AcceptedAnalysisResult]]
 
 MAX_CONCEPTUAL_REVISIONS = 1
 MAX_DBT_REPAIRS = 2
-MAX_ANALYSIS_REPAIRS = 1
+MAX_ANALYSIS_REPAIRS = 2
 MAX_FINDING_REPAIRS = 1
 
 def run(paths: list[Path], request: str, root: Path, *, on_event: Callable | None = None,
