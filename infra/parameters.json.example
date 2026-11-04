@@ -28,7 +28,7 @@
   "MaxSourceColumns": "30",
   "MaxProfileChars": "200000",
   "Threads": "1",
-  "MemoryMb": "768",
+  "MemoryMb": "1024",
   "SpillMb": "512",
   "WorkspaceBytes": "2147483648",
   "RetentionSeconds": "86400",
