@@ -314,8 +314,9 @@ def render_app(*, saved_run=None):
             border-right: 1px solid light-dark(#d6d8dc, #41444c);
             border-radius: 0.5rem 0 0 0.5rem;
           }
+          /* Keep the Browse files button styling off uploaded-file chip controls. */
           .st-key-dataset_picker .st-key-demo_picker button,
-          .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] button {
+          .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] button[data-testid="baseButton-secondary"] {
             width: 6.6rem;
             height: 2.5rem;
             min-height: 2.5rem;
@@ -329,10 +330,15 @@ def render_app(*, saved_run=None):
             border-color: #fb923c;
             color: #111827;
           }
-          .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] button:hover:not(:disabled) {
+          .st-key-dataset_picker [data-testid="stFileUploaderDropzone"] button[data-testid="baseButton-secondary"]:hover:not(:disabled) {
             background-color: #7dd3fc;
             border-color: #7dd3fc;
             color: #111827;
+          }
+          .st-key-dataset_picker [data-testid="stFileChipDeleteBtn"] button:hover:not(:disabled) {
+            color: #7dd3fc !important;
+            background-color: transparent !important;
+            box-shadow: none !important;
           }
           .st-key-dataset_picker .st-key-demo_picker button p {
             font-size: 0.8125rem;

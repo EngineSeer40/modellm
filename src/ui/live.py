@@ -314,8 +314,41 @@ def render_stage_progress(state: RunState | RunProgress) -> int | None:
         color: light-dark(#b3261e, #ffb4ab);
       }
       [class*="st-key-stage_"] { scroll-margin-top: 5rem; }
+      @keyframes modellm-progress-spin { to { transform: rotate(360deg); } }
+      .modellm-progress-spinner {
+        width: 1rem;
+        height: 1rem;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 50%;
+        animation: modellm-progress-spin 0.8s linear infinite;
+        flex: none;
+      }
+      .modellm-progress-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        white-space: nowrap;
+        color: light-dark(#137333, #75d99a);
+      }
     </style>""")
     selected = None
+    active_phase = next(
+        (phase for phase in phases if phase["status"] in {"running", "repairing", "checking"}),
+        None,
+    )
+    current_stage = None
+    if state.get("status", "running") == "running" and active_phase:
+        running_labels = {
+            "Loading datasets": "Loading Data",
+            "Understanding data": "Understanding Data",
+            "Conceptual Model Stage": "Conceptual Model",
+            "Dimensional Model Stage": "Dimensional Model",
+            "Analysis Stage": "Analysis",
+            "Interpreting results": "Interpreting Results",
+            "Plotting Stage": "Plotting",
+        }
+        current_stage = running_labels[active_phase["label"]]
     icons = {"complete": ":material/check_circle:", "current": ":material/radio_button_checked:",
              "pending": ":material/radio_button_unchecked:", "failed": ":material/error:"}
     with st.container(horizontal=True, vertical_alignment="center", gap="small", key="stage_progress"):
@@ -327,6 +360,12 @@ def render_stage_progress(state: RunState | RunProgress) -> int | None:
             if st.button(title, key=f"stagenav_{appearance}_{index}", icon=icons[appearance],
                          help=f"{title} · {status.capitalize()}. Open stage details."):
                 selected = index
+        if current_stage:
+            st.html(
+                '<div class="modellm-progress-status" role="status" aria-live="polite">'
+                '<span class="modellm-progress-spinner" aria-hidden="true"></span>'
+                f"<span>Running {current_stage} Stage</span></div>"
+            )
     return selected
 
 
